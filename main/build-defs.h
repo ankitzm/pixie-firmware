@@ -1,5 +1,4 @@
 #ifndef __BUILD_DEFS_H__
-
 #define __BUILD_DEFS_H__
 
 // See:
@@ -71,4 +70,4 @@
 #define BUILD_SEC   ((BUILD_TIME_IS_BAD) ? 99 :  COMPUTE_BUILD_SEC)
 
 
-#endif // __BUILD_DEFS_H__
+#endif /* __BUILD_DEFS_H__ */

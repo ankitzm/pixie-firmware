@@ -1,5 +1,5 @@
-#ifndef __BLE_H__
-#define __BLE_H__
+#ifndef __TASK_BLE_H__
+#define __TASK_BLE_H__
 
 #ifdef __cplusplus
 extern "C" {
@@ -35,4 +35,4 @@ size_t panel_copyMessage(uint32_t messageId, uint8_t *output);
 }
 #endif /* __cplusplus */
 
-#endif /* __BLE_H__ */
+#endif /* __TASK_BLE_H__ */
