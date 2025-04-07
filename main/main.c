@@ -13,6 +13,7 @@
 
 #include "panel-connect.h"
 #include "./panel-menu.h"
+#include "./panel-null.h"
 #include "./panel-space.h"
 //#include "./panel-keyboard.h"
 //#include "./panel-game.h"
@@ -66,8 +67,9 @@ void app_main() {
     // has high-priority. Don't doddle.
     // @TODO: should we start a short-lived low-priority task to start this?
     //app_push(panelMenuInit, sizeof(PanelMenuState), NULL);
-    pushPanelMenu(NULL);
+    //pushPanelMenu(NULL);
     //pushPanelSpace(NULL);
+    pushPanelNull(pushPanelSpace);
     //pushPanelKeyboard(NULL);
     //pushPanelGame(NULL);
     //pushPanelConnect(NULL);

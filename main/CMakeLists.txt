@@ -10,6 +10,7 @@ idf_component_register(
     "panel-keyboard.c"
     "panel-game.c"
     "panel-menu.c"
+    "panel-null.c"
     "panel-space.c"
     "pixels.c"
     "task-ble.c"
