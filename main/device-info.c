@@ -143,7 +143,12 @@ DeviceStatus device_init() {
     return ready;
 }
 
-DeviceStatus device_attest(uint8_t *challenge, DeviceAttestation *attest) {
+// The top bit of nonce should be:
+// - 0 for extenal API usage
+// - 1 for less-insecure purposes used internally
+static DeviceStatus _device_attest(uint8_t *challenge, uint8_t *nonce,
+  DeviceAttestation *attest) {
+
     if (!ready) { return ready; }
 
     size_t offset = 0;
@@ -152,8 +157,9 @@ DeviceStatus device_attest(uint8_t *challenge, DeviceAttestation *attest) {
     attest->version = 1;
     attestation[offset++] = 1;
 
-    esp_fill_random(attest->nonce, 16);
-    memcpy(&attestation[offset], attest->nonce, 16);
+    //esp_fill_random(attest->nonce, 16);
+    memcpy(attest->nonce, nonce, 16);
+    memcpy(&attestation[offset], nonce, 16);
     offset += 16;
 
     memcpy(attest->challenge, challenge, 32);
@@ -195,19 +201,44 @@ DeviceStatus device_attest(uint8_t *challenge, DeviceAttestation *attest) {
     int ret = esp_ds_sign(hash, cipherdata, ATTEST_HMAC_KEY, sig);
     if (ret) { return DeviceStatusFailed; }
 
-    // Async version
-    /*
-    esp_ds_context_t *signCtx = NULL;
-    int ret = esp_ds_start_sign(hash, cipherdata, ATTEST_HMAC_KEY, &signCtx);
-    if (ret) { return DeviceStatusFailed; }
-    while (esp_ds_is_busy()) { delay(1); }
-    ret = esp_ds_finish_sign(sig, signCtx);
-    if (ret) { return DeviceStatusFailed; }
-    */
-
     reverseBytes(sig, sizeof(sig));
 
     memcpy(attest->signature, sig, sizeof(sig));
 
     return DeviceStatusOk;
+}
+
+
+DeviceStatus device_attest(uint8_t *challenge, DeviceAttestation *attest) {
+
+    // Create a random nonce
+    uint8_t nonce[16];
+    esp_fill_random(nonce, 16);
+
+    // We reserve the top bit being set for internal usage so that
+    // the external API cannot expose internal values.
+    nonce[0] &= 0x7f;
+
+    return _device_attest(challenge, nonce, attest);
+}
+
+uint8_t* device_testPrivateKey(uint8_t *data) {
+    if (ready || cipherdata == NULL) { return NULL; }
+
+    uint8_t digest[32];
+    ffx_hash_keccak256(digest, (uint8_t*)cipherdata, sizeof(esp_ds_data_t));
+
+    // The nonce must be stable to ensure the same key is generated
+    // every time, and the top bit set so only this internal API
+    // can access a given signature.
+    uint8_t nonce[16] = { 0 };
+    nonce[0] |= 0x80;
+
+    DeviceAttestation attest = { 0 };
+    DeviceStatus status = _device_attest(digest, nonce, &attest);
+    if (status) { return NULL; }
+
+    ffx_hash_keccak256(data, attest.signature, 384);
+
+    return data;
 }

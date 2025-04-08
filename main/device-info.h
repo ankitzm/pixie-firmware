@@ -81,6 +81,23 @@ typedef struct DeviceAttestation {
  */
 DeviceStatus device_attest(uint8_t *challenge, DeviceAttestation *attest);
 
+/**
+ *  This privste key is ONLY for testing purposes. It should NEVER
+ *  be used for anything meaningful.
+ *
+ *  It is derived from the device encrypted attestation and signature
+ *  using the device attestation key.
+ *
+ *  The [[device_init]] must have been successfully called for this
+ *  to return a valid private key, and will return NULL otherwise.
+ *
+ *  The %%data%% buffer must be at least [[FFX_PRIVKEY_LENGTH]] long
+ *  and will contain the private key after calling. It should be zero-ed
+ *  before returned to the system and general cryptographic protections
+ *  should be applied to it.
+ */
+uint8_t* device_testPrivateKey(uint8_t *data);
+
 
 #ifdef __cplusplus
 }
