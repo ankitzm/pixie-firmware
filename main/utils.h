@@ -5,7 +5,9 @@
 extern "C" {
 #endif /* __cplusplus */
 
+#include <stddef.h>
 #include <stdint.h>
+
 
 /////////////////////////////
 // Timer functions
@@ -16,7 +18,18 @@ uint32_t ticks();
 // Delay %duration% ms
 void delay(uint32_t duration);
 
+
+/////////////////////////////
+// Task functions
+
 char* taskName();
+
+
+/////////////////////////////
+// Console functions
+
+void dumpBuffer(char *header, uint8_t *buffer, size_t length);
+
 
 #ifdef __cplusplus
 }
