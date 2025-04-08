@@ -34,6 +34,7 @@ typedef struct Payload {
 #define STATE_SUBSCRIBED        (1 << 1)
 #define STATE_ENCRYPTED         (1 << 2)
 
+
 typedef enum MessageState {
     // Ready to receive data; data is rx
     MessageStateReady     = 0,
@@ -51,16 +52,52 @@ typedef enum MessageState {
     MessageStateSending
 } MessageState;
 
-
-static uint32_t nextMessageId = 1;
-
 // Length of CBOR overhead for replys (@TODO: too big, resize)
 #define CBOR_HEADER         (128)
 
 #define METHOD_LENGTH       (32)
 
+typedef struct Message {
+    // @TODO:
+    StaticSemaphore_t lockBuffer;
+    SemaphoreHandle_t lock;
+
+    // An ID to reply with
+    uint32_t replyId;
+
+    // Unique id for each message
+    uint32_t id;
+
+    // The CBOR payload received over the wire
+    FfxCborCursor payload;
+
+    // A NULL-terminated copy of the method in the payload
+    char method[METHOD_LENGTH];
+
+    // The params in the payload
+    FfxCborCursor params;
+
+    MessageState state;
+
+    // The buffer to hold an incoming message
+    uint8_t data[MAX_MESSAGE_SIZE + CBOR_HEADER];
+
+    // Next expected offset for the incoming message
+    size_t offset;
+
+    // Total expected message size
+    size_t length;
+} Message;
+
+static uint32_t nextMessageId = 1;
+
+static Message msg = { 0 };
+
+
 typedef struct Connection {
     uint32_t state;
+
+    bool clearToSend;
 
     // Task Handle to notify the BLE Task loop to wake up
     TaskHandle_t task;
@@ -75,27 +112,6 @@ typedef struct Connection {
     uint16_t battery_handle;
 
     bool enabled;
-
-    // An ID to reply with
-    uint32_t replyId;
-
-    // Unique id for each message
-    uint32_t messageId;
-
-    FfxCborCursor message;
-    char method[METHOD_LENGTH];
-    FfxCborCursor params;
-
-    MessageState messageState;
-
-    // The buffer to hold an incoming message
-    uint8_t data[MAX_MESSAGE_SIZE + CBOR_HEADER];
-
-    // Next expected offset for the incoming message
-    size_t offset;
-
-    // Total expected message size
-    size_t length;
 } Connection;
 
 static Connection conn = { 0 };
@@ -110,14 +126,11 @@ static void print_addr(const char *prefix, const void *addr) {
       u8p[5], u8p[4], u8p[3], u8p[2], u8p[1], u8p[0]);
 }
 
-static void dumpBuffer(char *header, uint8_t *buffer, size_t length) {
-    printf("%s (length=%d)", header, length);
+static bool compareBuffer(uint8_t *a, uint8_t *b, size_t length) {
     for (int i = 0; i < length; i++) {
-        if ((i % 16) == 0) { printf("\n    "); }
-        printf("%02x", buffer[i]);
-        if ((i % 4) == 3) { printf("  "); }
+        if (a[i] != b[i]) { return false; }
     }
-    printf("\n");
+    return true;
 }
 
 
@@ -163,130 +176,338 @@ static void dumpBuffer(char *header, uint8_t *buffer, size_t length) {
 #define ERROR_BAD_COMMAND                           (0x82)
 #define ERROR_BUFFER_OVERRUN                        (0x84)
 #define ERROR_MISSING_MESSAGE                       (0x85)
+#define ERROR_BAD_CHECKSUM                          (0x86)
 #define ERROR_UNKNOWN                               (0x8f)
 
-// Internal value used to skip responding; must not collide with
-// any other STATUS_* or ERROR_*. The ERROR bit is clear.
-#define STATUS_SKIP                                  (0x7f)
 
 
-// See: main.c
-//void emitMessageEvents(uint32_t id, const char*method, FfxCborCursor *params);
+///////////////////////////////
+// Commands
 
+#define COMMAND_QUEUE_LENGTH    (8)
+
+typedef struct CommandQueue {
+    StaticSemaphore_t lockBuffer;
+    SemaphoreHandle_t lock;
+    uint32_t queue[COMMAND_QUEUE_LENGTH];
+    size_t start;
+    size_t length;
+} CommandQueue;
+
+static CommandQueue commands = { 0 };
+
+
+static void queueCommand(uint32_t entry) {
+
+    xSemaphoreTake(commands.lock, portMAX_DELAY);
+
+    if (commands.length < COMMAND_QUEUE_LENGTH) {
+        size_t offset = commands.start + commands.length;
+        commands.queue[offset % COMMAND_QUEUE_LENGTH] = entry;
+        commands.length++;
+    }
+
+    xSemaphoreGive(commands.lock);
+
+    // Wake up the task to send pending commands
+    xTaskNotifyGive(conn.task);
+}
+
+static void queueCommandResponse(uint8_t command, uint8_t error) {
+    return queueCommand((command << 8) | error);
+}
+
+static void queueCommandRequest(uint8_t command) {
+    return queueCommand(command << 16);
+}
+
+static bool dequeueCommand(uint8_t *buffer, size_t *length) {
+    *length = 0;
+
+    xSemaphoreTake(commands.lock, portMAX_DELAY);
+    do {
+        if (commands.length == 0) { break; }
+
+        uint32_t entry = commands.queue[commands.start];
+
+        // Update the circular buffer
+        commands.start = (commands.start + 1) % COMMAND_QUEUE_LENGTH;
+        commands.length--;
+
+        uint32_t cmd = (entry >> 16) & 0xff;
+
+        // Request
+        if (cmd) {
+            buffer[0] = cmd;
+            *length = 1;
+            break;
+        }
+
+        // Reply
+        cmd = (entry >> 8) & 0xff;
+        uint32_t error = entry & 0xff;
+        if (error) {
+            buffer[0] = error;
+            buffer[1] = cmd;
+            *length = 2;
+
+        } else if (cmd == CMD_QUERY) {
+            size_t offset = 0;
+
+            buffer[offset++] = STATUS_OK;
+            buffer[offset++] = CMD_QUERY;
+            buffer[offset++] = 0x01;
+
+            buffer[offset++] = msg.offset >> 8;
+            buffer[offset++] = msg.offset & 0xff;
+
+            buffer[offset++] = msg.length >> 8;
+            buffer[offset++] = msg.length & 0xff;
+
+            uint32_t v = device_modelNumber();
+            buffer[offset++] = (v >> 24) & 0xff;
+            buffer[offset++] = (v >> 16) & 0xff;
+            buffer[offset++] = (v >> 8) & 0xff;
+            buffer[offset++] = v & 0xff;
+
+            v = device_serialNumber();
+            buffer[offset++] = (v >> 24) & 0xff;
+            buffer[offset++] = (v >> 16) & 0xff;
+            buffer[offset++] = (v >> 8) & 0xff;
+            buffer[offset++] = v & 0xff;
+
+            *length = offset;
+        } else {
+            buffer[0] = STATUS_OK;
+        }
+    } while(0);
+    xSemaphoreGive(commands.lock);
+
+    return (*length) != 0;
+}
+
+
+///////////////////////////////
+// Message
+
+// Caller must own msg.lock
+static uint32_t checkMessage(FfxCborCursor *_cursor) {
+    FfxCborCursor cursor;
+
+    // Check ID
+
+    ffx_cbor_clone(&cursor, _cursor);
+
+    FfxCborStatus status = ffx_cbor_followKey(&cursor, "id");
+    if (status || ffx_cbor_getType(&cursor) != FfxCborTypeNumber) { return 0; }
+
+    uint64_t replyId;
+    status = ffx_cbor_getValue(&cursor, &replyId);
+    if (replyId == 0 || replyId > 0x7fffffff) { return 0; }
+
+
+    // Check Method (and copy it)
+
+    ffx_cbor_clone(&cursor, _cursor);
+
+    status = ffx_cbor_followKey(&cursor, "method");
+    if (status || ffx_cbor_getType(&cursor) != FfxCborTypeString) { return 0; }
+
+    size_t length;
+    status = ffx_cbor_getLength(&cursor, &length);
+    if (status || length == 0) { return 0; }
+
+    if (length > METHOD_LENGTH - 1) { length = METHOD_LENGTH - 1; }
+
+    memset(msg.method, 0, METHOD_LENGTH);
+    status = ffx_cbor_copyData(&cursor, (uint8_t*)msg.method, length);
+    msg.method[length] = 0;
+
+    if (status) { return 0; }
+
+
+    // Check params
+
+    ffx_cbor_clone(&cursor, _cursor);
+
+    status = ffx_cbor_followKey(&cursor, "params");
+    if (status) { return 0; }
+
+    ffx_cbor_clone(&msg.params, &cursor);
+
+    FfxCborType type = ffx_cbor_getType(&cursor);
+
+    if (type != FfxCborTypeArray && type != FfxCborTypeMap) { return 0; }
+
+    return replyId;
+}
+
+// Caller MUST own msg.lock
+static void resetMessage() {
+    msg.state = MessageStateReady;
+    msg.length = 0;
+    msg.offset = 0;
+}
+
+// Caller must own msg.lock
 static void processMessage() {
-    conn.messageId = nextMessageId++;
+    msg.id = nextMessageId++;
 
-    if (conn.length < 32) {
-        printf("TO SHORT: @TODO\n");
+    if (msg.length < 32) {
+        resetMessage();
+        queueCommandResponse(CMD_START_MESSAGE, ERROR_MISSING_MESSAGE);
         return;
     }
 
-    dumpBuffer("Process Message", conn.data, conn.length);
+    dumpBuffer("Process Message", msg.data, msg.length);
 
     uint8_t checksum[32];
     FfxSha256Context ctx;
     ffx_hash_initSha256(&ctx);
-    ffx_hash_updateSha256(&ctx, &conn.data[32], conn.length - 32);
+    ffx_hash_updateSha256(&ctx, &msg.data[32], msg.length - 32);
     ffx_hash_finalSha256(&ctx, checksum);
 
-    for (int i = 0; i < 32; i++) {
-        if (checksum[i] != conn.data[i]) {
-            printf("BAD CHECKSUM!\n");
-            return;
-        }
+    if (!compareBuffer(checksum, msg.data, sizeof(checksum))) {
+        resetMessage();
+        queueCommandResponse(CMD_START_MESSAGE, ERROR_BAD_CHECKSUM);
+        return;
     }
 
-    ffx_cbor_init(&conn.message, &conn.data[32], conn.length - 32);
+    ffx_cbor_walk(&msg.payload, &msg.data[32], msg.length - 32);
 
     // Dump the CBOR data to the console
-    ffx_cbor_dump(&conn.message);
+    ffx_cbor_dump(&msg.payload);
 
-    uint32_t replyId = 0;
-    do {
-        FfxCborCursor cursor;
-        ffx_cbor_clone(&cursor, &conn.message);
-
-        FfxCborStatus status = ffx_cbor_followKey(&cursor, "id");
-        if (status || ffx_cbor_getType(&cursor) != FfxCborTypeNumber) {
-            break;
-        }
-
-        uint64_t value;
-        status = ffx_cbor_getValue(&cursor, &value);
-        if (value == 0 || value > 0x7fffffff) { break; }
-
-        replyId = value;
-    } while(0);
-
-    do {
-        if (replyId == 0) { break; }
-
-        FfxCborCursor cursor;
-        ffx_cbor_clone(&cursor, &conn.message);
-
-        FfxCborStatus status = ffx_cbor_followKey(&cursor, "method");
-        if (status || ffx_cbor_getType(&cursor) != FfxCborTypeString) {
-            replyId = 0;
-            break;
-        }
-
-        memset(conn.method, 0, METHOD_LENGTH);
-        size_t length = ffx_cbor_copyData(&cursor, (uint8_t*)conn.method,
-          METHOD_LENGTH - 1);
-        conn.method[length] = 0;
-
-        if (length == 0) {
-            replyId = 0;
-            break;
-        }
-    } while(0);
-
-    do {
-        if (replyId == 0) { break; }
-
-        FfxCborCursor *cursor = &conn.params;
-        ffx_cbor_clone(cursor, &conn.message);
-
-        FfxCborStatus status = ffx_cbor_followKey(cursor, "params");
-        if (status || (ffx_cbor_getType(cursor) != FfxCborTypeArray &&
-          ffx_cbor_getType(cursor) != FfxCborTypeMap)) {
-            replyId = 0;
-            break;
-        }
-    } while (0);
-
-    conn.replyId = replyId;
+    uint32_t replyId = checkMessage(&msg.payload);
+    msg.replyId = replyId;
 
     if (replyId) {
-        conn.messageState = MessageStateReceived;
+        msg.state = MessageStateReceived;
 
-        // This gets cloned within the emitMessageEvents.
-        //emitMessageEvents(replyId, conn.method, &conn.params);
+        // The params gets cloned within the emitMessageEvents.
         panel_emitEvent(EventNameMessage, (EventPayloadProps){
             .message = {
                 .id = replyId,
-                .method = conn.method,
-                .params = conn.params
+                .method = msg.method,
+                .params = msg.params
             }
         });
+
     } else {
-        conn.messageState = MessageStateReady;
+        resetMessage();
     }
 }
 
 ///////////////////////////////
 // BLE goop
 
-static int notify(uint8_t *data, size_t length) {
-    if ((conn.state & STATE_CONNECTED) == 0) {
-        printf("Not connected; cannot notify\n");
-        return -1;
-    }
 
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, length);
-    int rc = ble_gatts_indicate_custom(conn.conn_handle, conn.content, om);
-    if (rc) { printf("[ble] indicate fail: handle=%d rc=%d\n", conn.content, rc); }
-    return rc;
+
+static void handleRequest(uint8_t *req, size_t length) {
+
+    switch (req[0]) {
+        case CMD_QUERY:
+            queueCommandResponse(CMD_QUERY, STATUS_OK);
+            break;
+
+        case CMD_RESET:
+            xSemaphoreTake(msg.lock, portMAX_DELAY);
+
+            // Not in a state ready to receive
+            if (msg.state != MessageStateReady &&
+              msg.state != MessageStateReceiving) {
+                xSemaphoreGive(msg.lock);
+                queueCommandResponse(CMD_RESET, ERROR_BUSY);
+                break;
+            }
+
+            msg.replyId = 0;
+            resetMessage();
+
+            xSemaphoreGive(msg.lock);
+
+            break;
+
+        case CMD_START_MESSAGE: {
+            xSemaphoreTake(msg.lock, portMAX_DELAY);
+
+            // Not ready to start a new message
+            if (msg.state != MessageStateReady) {
+                xSemaphoreGive(msg.lock);
+                queueCommandResponse(CMD_START_MESSAGE, ERROR_BUSY);
+                break;
+            }
+
+            // Missing length parameter
+            if (length < 3) {
+                xSemaphoreGive(msg.lock);
+                queueCommandResponse(CMD_START_MESSAGE, ERROR_BUFFER_OVERRUN);
+                break;
+            }
+
+            uint16_t msgLen = (req[1] << 8) | req[2];
+
+            // No message or a message is already started
+            if (msgLen == 0 || length < 4 || msg.offset != 0) {
+                xSemaphoreGive(msg.lock);
+                queueCommandResponse(CMD_START_MESSAGE, ERROR_MISSING_MESSAGE);
+                break;
+            }
+
+            // Update the message
+            msg.length = msgLen;
+            msg.offset = length - 1 - 2;
+            msg.state = MessageStateReceiving;
+            memcpy(msg.data, &req[3], length - 1 - 2);
+
+            // Message ready to process!
+            if (msg.offset == msg.length) { processMessage(); }
+
+            xSemaphoreGive(msg.lock);
+
+            break;
+        }
+
+        case CMD_CONTINUE_MESSAGE: {
+            xSemaphoreTake(msg.lock, portMAX_DELAY);
+            if (msg.state != MessageStateReceiving) {
+                xSemaphoreGive(msg.lock);
+                queueCommandResponse(CMD_CONTINUE_MESSAGE, ERROR_BUSY);
+                break;
+            }
+
+            // Missing length parameter
+            if (length < 3) {
+                xSemaphoreGive(msg.lock);
+                queueCommandResponse(CMD_CONTINUE_MESSAGE, ERROR_BUFFER_OVERRUN);
+                break;
+            }
+
+            uint16_t msgOffset = (req[1] << 8) | req[2];
+
+            // No message to continue
+            if (msg.offset == 0 || length < 4 || msgOffset != msg.offset) {
+                xSemaphoreGive(msg.lock);
+                queueCommandResponse(CMD_CONTINUE_MESSAGE, ERROR_MISSING_MESSAGE);
+                break;
+            }
+
+            // Update the message
+            msg.offset += length - 1 - 2;
+            memcpy(&msg.data[msgOffset], &req[3], length - 1 - 2);
+
+            // Message ready to process!
+            if (msg.offset == msg.length) { processMessage(); }
+
+            xSemaphoreGive(msg.lock);
+
+            break;
+        }
+
+        default:
+            queueCommandResponse(req[0], ERROR_BAD_COMMAND);
+            break;
+    }
 }
 
 static int gattAccess(uint16_t conn_handle, uint16_t attr_handle,
@@ -313,142 +534,26 @@ static int gattAccess(uint16_t conn_handle, uint16_t attr_handle,
         ////////////////////
         // Write operation (host-to-device)
 
-        // @TODO: Check that length doesn't exceed 512 bytes
+        size_t length = os_mbuf_len(ctx->om);
+        if (length == 0) {
+            queueCommandResponse(0, ERROR_BUFFER_OVERRUN);
 
-        uint16_t length = os_mbuf_len(ctx->om);
-        uint8_t req[length];
-        int rc = os_mbuf_copydata(ctx->om, 0, length, req);
-        if (rc) { printf("[ble] write fail: rc=%d\n", rc); }
+        } else if (length > 513) {
+            uint8_t req[1];
+            int rc = os_mbuf_copydata(ctx->om, 0, 1, req);
+            if (rc) { printf("[ble] write fail: rc=%d\n", rc); }
+            queueCommandResponse(req[0], ERROR_BUFFER_OVERRUN);
 
-        // Response; maximum length is 14 bytes (include space for hash)
-        uint8_t resp[34] = { 0 };
-        resp[0] = STATUS_SKIP;
-        size_t offset = 1;
-
-        do {
-            // Error copying request
-            if (rc) { break; }
-
-            // No data to work with at all
-            if (length < 1) {
-                resp[0] = ERROR_BUFFER_OVERRUN;
-                break;
-            }
-
-            uint8_t cmd = req[0];
-
-            resp[offset++] = cmd;
-
-            if (cmd == CMD_QUERY) {
-                resp[0] = STATUS_OK;
-
-                resp[offset++] = CMD_QUERY;
-                resp[offset++] = 0x01;
-
-                resp[offset++] = conn.offset >> 8;
-                resp[offset++] = conn.offset & 0xff;
-
-                resp[offset++] = conn.length >> 8;
-                resp[offset++] = conn.length & 0xff;
-
-                uint32_t v = device_modelNumber();
-                resp[offset++] = (v >> 24) & 0xff;
-                resp[offset++] = (v >> 16) & 0xff;
-                resp[offset++] = (v >> 8) & 0xff;
-                resp[offset++] = v & 0xff;
-
-                v = device_serialNumber();
-                resp[offset++] = (v >> 24) & 0xff;
-                resp[offset++] = (v >> 16) & 0xff;
-                resp[offset++] = (v >> 8) & 0xff;
-                resp[offset++] = v & 0xff;
-
-            } else if (cmd == CMD_RESET) {
-
-                // Not in a state ready to receive
-                if (conn.messageState != MessageStateReady &&
-                  conn.messageState != MessageStateReceiving) {
-                    resp[0] = ERROR_BUSY;
-                    break;
-                }
-
-                conn.replyId = 0;
-                conn.offset = 0;
-                conn.length = 0;
-                conn.messageState = MessageStateReady;
-
-            } else if (cmd == CMD_START_MESSAGE) {
-
-                // Not ready to start a new message
-                if (conn.messageState != MessageStateReady) {
-                    resp[0] = ERROR_BUSY;
-                    break;
-                }
-
-                // Missing length parameter
-                if (length < 3) {
-                    resp[0] = ERROR_BUFFER_OVERRUN;
-                    break;
-                }
-
-                uint16_t msgLen = (req[1] << 8) | req[2];
-
-                // No message or a message is already started
-                if (msgLen == 0 || length < 4 || conn.offset != 0) {
-                    resp[0] = ERROR_MISSING_MESSAGE;
-                    break;
-                }
-
-                // Update the message
-                conn.length = msgLen;
-                conn.offset = length - 1 - 2;
-                conn.messageState = MessageStateReceiving;
-                memcpy(conn.data, &req[3], length - 1 - 2);
-
-                // Message ready to process!
-                if (conn.offset == conn.length) { processMessage(); }
-
-            } else if (cmd == CMD_CONTINUE_MESSAGE) {
-                if (conn.messageState != MessageStateReceiving) {
-                    resp[0] = ERROR_BUSY;
-                    break;
-                }
-
-                // Missing length parameter
-                if (length < 3) {
-                    resp[0] = ERROR_BUFFER_OVERRUN;
-                    break;
-                }
-
-                // No message to continue
-                if (conn.offset == 0) {
-                    resp[0] = ERROR_MISSING_MESSAGE;
-                    break;
-                }
-
-                uint16_t msgOffset = (req[1] << 8) | req[2];
-
-                // Message offset is out of sync
-                if (length < 4 || msgOffset != conn.offset) {
-                    resp[0] = ERROR_MISSING_MESSAGE;
-                    break;
-                }
-
-                // Update the message
-                conn.offset += length - 1 - 2;
-                memcpy(&conn.data[msgOffset], &req[3], length - 1 - 2);
-
-                // Message ready to process!
-                if (conn.offset == conn.length) { processMessage(); }
-
+        } else {
+            uint8_t req[length];
+            int rc = os_mbuf_copydata(ctx->om, 0, length, req);
+            if (rc) {
+                printf("[ble] write fail: rc=%d\n", rc);
+                queueCommandResponse(0, ERROR_BUFFER_OVERRUN);
             } else {
-                resp[0] = ERROR_BAD_COMMAND;
+                handleRequest(req, length);
             }
-
-        } while (0);
-
-        // Send response if there is a response or error.
-        if (resp[0] != STATUS_SKIP) { notify(resp, offset); }
+        }
 
         return 0;
     }
@@ -456,7 +561,7 @@ static int gattAccess(uint16_t conn_handle, uint16_t attr_handle,
     ////////////////////
     // Read operation (device-to-host)
 
-    // Static content; just pass along the payload
+    // Static content set in the definition; just pass along the payload
     if (arg) {
         Payload *payload = arg;
 
@@ -492,8 +597,6 @@ static int gattAccess(uint16_t conn_handle, uint16_t attr_handle,
         int rc = os_mbuf_append(ctx->om, data, sizeof(data));
         return (rc == 0) ? 0: BLE_ATT_ERR_INSUFFICIENT_RES;
     }
-
-    printf("send uuid=%04x\n", uuid);
 
     static int foo = 0;
     char buffer[9] = { 0 };
@@ -536,7 +639,7 @@ static void _svrRegister(struct ble_gatt_register_ctxt *ctxt, void *arg) {
 static int _gapEvent(struct ble_gap_event *event, void *arg);
 
 static void _advertise() {
-    printf("ble_advertise\n");
+    printf("[ble] start advertising\n");
 
     struct ble_hs_adv_fields fields;
     memset(&fields, 0, sizeof(fields));
@@ -667,6 +770,7 @@ static int _gapEvent(struct ble_gap_event *event, void *_context) {
               event->notify_tx.status, event->notify_tx.indication);
 
             if (event->notify_tx.status == BLE_HS_EDONE) {
+                conn.clearToSend = true;
                 xTaskNotifyGive(conn.task);
             }
 
@@ -764,7 +868,6 @@ static int _gapEvent(struct ble_gap_event *event, void *_context) {
             printf("[ble] enc change: status=%d connHandle=%d\n",
               event->link_estab.status, event->link_estab.conn_handle);
             return 0;
-            return 0;
 
         default:
             printf("Unhandled: type=%d\n", event->type);
@@ -797,37 +900,46 @@ bool panel_isMessageEnabled() { return conn.enabled; }
 
 
 bool panel_acceptMessage(uint32_t id, FfxCborCursor *params) {
-    if (conn.messageState != MessageStateReceived || id == 0 ||
-      id != conn.messageId) { return false; }
+    xSemaphoreTake(msg.lock, portMAX_DELAY);
 
-    conn.messageState = MessageStateProcessing;
+    if (msg.state != MessageStateReceived || id == 0 || id != msg.id) {
+        xSemaphoreGive(msg.lock);
+        return false;
+    }
 
-    if (params) { ffx_cbor_clone(params, &conn.message); }
+    msg.state = MessageStateProcessing;
+
+    if (params) { ffx_cbor_clone(params, &msg.params); }
+
+    xSemaphoreGive(msg.lock);
 
     return true;
 }
 
-
+// Caller must own msg.lock
 static void sendMessage(FfxCborBuilder *builder) {
     size_t cborLength = ffx_cbor_getBuildLength(builder);
 
-    conn.length = cborLength + 32;
-    conn.messageState = MessageStateSending;
-    conn.messageId = 0;
+    msg.length = cborLength + 32;
+    msg.state = MessageStateSending;
+    msg.id = 0;
 
     FfxSha256Context ctx;
     ffx_hash_initSha256(&ctx);
-    ffx_hash_updateSha256(&ctx, &conn.data[32], cborLength);
-    ffx_hash_finalSha256(&ctx, conn.data);
+    ffx_hash_updateSha256(&ctx, &msg.data[32], cborLength);
+    ffx_hash_finalSha256(&ctx, msg.data);
 
-    uint8_t resetMessage[] = { CMD_RESET };
-    notify(resetMessage, sizeof(resetMessage));
+    queueCommandRequest(CMD_RESET);
+
+    // Wake up the task to send the pending message
+    xTaskNotifyGive(conn.task);
 }
 
+// Caller MUST own msg.lock
 static void prepareReply(FfxCborBuilder *builder) {
-    memset(conn.data, 0, MAX_MESSAGE_SIZE + CBOR_HEADER);
+    memset(msg.data, 0, MAX_MESSAGE_SIZE + CBOR_HEADER);
 
-    ffx_cbor_build(builder, &conn.data[32],
+    ffx_cbor_build(builder, &msg.data[32],
       MAX_MESSAGE_SIZE + CBOR_HEADER - 32);
 
     ffx_cbor_appendMap(builder, 3);
@@ -836,19 +948,22 @@ static void prepareReply(FfxCborBuilder *builder) {
         ffx_cbor_appendNumber(builder, 1);
 
         ffx_cbor_appendString(builder, "id");
-        ffx_cbor_appendNumber(builder, conn.replyId);
+        ffx_cbor_appendNumber(builder, msg.replyId);
     }
 
-    conn.offset = 0;
+    msg.offset = 0;
 }
 
 bool panel_sendErrorReply(uint32_t id, uint32_t code, char *message) {
-    if (id == 0 || id != conn.messageId) { return false; }
-
     size_t length = strlen(message);
-    if (length > 128) { return false; }
+    if (id == 0 || length > 128) { return false; }
 
-    if (conn.messageState != MessageStateProcessing) { return false; }
+    xSemaphoreTake(msg.lock, portMAX_DELAY);
+
+    if (id != msg.id || msg.state != MessageStateProcessing) {
+        xSemaphoreGive(msg.lock);
+        return false;
+    }
 
     FfxCborBuilder builder;
     prepareReply(&builder);
@@ -866,14 +981,23 @@ bool panel_sendErrorReply(uint32_t id, uint32_t code, char *message) {
 
     sendMessage(&builder);
 
+    xSemaphoreGive(msg.lock);
+
     return true;
 }
 
 bool panel_sendReply(uint32_t id, FfxCborBuilder *result) {
-    if (id == 0 || id != conn.messageId) { return false; }
+    if (id == 0) { return false; }
 
-    if (ffx_cbor_getBuildLength(result) > MAX_MESSAGE_SIZE) { return false; }
-    if (conn.messageState != MessageStateProcessing) { return false; }
+    xSemaphoreTake(msg.lock, portMAX_DELAY);
+
+    if (id == 0 || id != msg.id) { return false; }
+
+    if (id != msg.id || ffx_cbor_getBuildLength(result) > MAX_MESSAGE_SIZE ||
+      msg.state != MessageStateProcessing) {
+        xSemaphoreGive(msg.lock);
+        return false;
+    }
 
     FfxCborBuilder builder;
     prepareReply(&builder);
@@ -884,11 +1008,49 @@ bool panel_sendReply(uint32_t id, FfxCborBuilder *result) {
 
     sendMessage(&builder);
 
+    xSemaphoreGive(msg.lock);
+
     return true;
 }
 
 ///////////////////////////////
 // BLE Task API
+
+static bool sendMessageChunk(uint8_t *buffer, size_t *length) {
+    xSemaphoreTake(msg.lock, portMAX_DELAY);
+
+    *length = 0;
+
+    if (msg.state != MessageStateSending) {
+        xSemaphoreGive(msg.lock);
+        return false;
+    }
+
+    size_t remaining = msg.length - msg.offset;
+    if (remaining > 506) { remaining = 506; }
+
+    if (msg.offset == 0) {
+        buffer[0] = CMD_START_MESSAGE;
+        buffer[1] = msg.length >> 8;
+        buffer[2] = msg.length & 0xff;
+
+    } else {
+        buffer[0] = CMD_CONTINUE_MESSAGE;
+        buffer[1] = msg.offset >> 8;
+        buffer[2] = msg.offset & 0xff;
+    }
+
+    memcpy(&buffer[3], &msg.data[msg.offset], remaining);
+    msg.offset += remaining;
+
+    *length = remaining + 3;
+
+    if ((msg.length - msg.offset) == 0) { resetMessage(); }
+
+    xSemaphoreGive(msg.lock);
+
+    return true;
+}
 
 // TEMP
 void ble_store_config_init(void);
@@ -900,6 +1062,15 @@ void taskBleFunc(void* pvParameter) {
     TaskStatus_t task;
     vTaskGetInfo(NULL, &task, pdFALSE, pdFALSE);
     conn.task = task.xHandle;
+
+    commands.lock = xSemaphoreCreateBinaryStatic(&commands.lockBuffer);
+    xSemaphoreGive(commands.lock);
+
+    msg.lock = xSemaphoreCreateBinaryStatic(&msg.lockBuffer);
+    xSemaphoreGive(msg.lock);
+
+    conn.clearToSend = true;
+
 
     // Device Information Service Data
 
@@ -1069,53 +1240,58 @@ void taskBleFunc(void* pvParameter) {
     // See: components/bt//host/nimble/nimble/nimble/host/store/config/src/ble_store_config.c
     ble_store_config_init();
 
+
+
+
     // Run forever
     nimble_port_freertos_init(_runTask);
 
     // Unblock the bootstrap task
     *ready = 1;
 
-    uint8_t *buffer = NULL;
+    uint8_t buffer[512];
 
     while (1) {
-        if (buffer) {
-            free(buffer);
-            buffer = NULL;
+
+        size_t length = 0;
+
+        if (!conn.clearToSend) {
+            // Wait for a notification from the notification callback
+            // letting us know the CTS is set
+            ulTaskNotifyTake(pdFALSE, 1000);
+            continue;
+
+        } else if (dequeueCommand(buffer, &length)) {
+            // Pending command; it has been copied to buffer and
+            // length updated
+
+        } else if (sendMessageChunk(buffer, &length)) {
+            // Pending outgoing message; it has been copied to buffer
+            // and length updated
         }
 
-        // Wait for a notification
-        ulTaskNotifyTake(pdFALSE, 3000);
+        if (length) {
+            //printf("[ble] indicate: length=%d header=%02x%02x\n", length,
+            //  buffer[0], (length > 1) ? buffer[1]: 0);
 
-        // If pending send message, send the next chunk
-        if (conn.messageState == MessageStateSending) {
-
-            size_t length = conn.length - conn.offset;
-            if (length == 0) {
-                conn.offset = 0;
-                conn.length = 0;
-                conn.messageState = MessageStateReady;
+            if ((conn.state & STATE_CONNECTED) == 0) {
+                printf("[ble] indicate: not connected\n");
                 continue;
             }
 
-            if (length > 506) { length = 506; }
-
-            buffer = malloc(512);
-
-            if (conn.offset == 0) {
-                buffer[0] = CMD_START_MESSAGE;
-                buffer[1] = conn.length >> 8;
-                buffer[2] = conn.length & 0xff;
-
-            } else {
-                buffer[0] = CMD_CONTINUE_MESSAGE;
-                buffer[1] = conn.offset >> 8;
-                buffer[2] = conn.offset & 0xff;
+            struct os_mbuf *om = ble_hs_mbuf_from_flat(buffer, length);
+            conn.clearToSend = false;
+            int rc = ble_gatts_indicate_custom(conn.conn_handle,
+              conn.content, om);
+            if (rc) {
+                printf("[ble] indicate fail: handle=%d rc=%d\n", conn.content, rc);
+                conn.clearToSend = true;
+                continue;
             }
 
-            memcpy(&buffer[3], &conn.data[conn.offset], length);
-            conn.offset += length;
-
-            notify(buffer, length + 3);
+        } else {
+            // Wait for a notification from sendMessge or queueCommand
+            ulTaskNotifyTake(pdFALSE, 1000);
         }
 
         /*
