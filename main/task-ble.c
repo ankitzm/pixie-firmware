@@ -30,69 +30,10 @@ typedef struct Payload {
     uint8_t *data;
 } Payload;
 
+
 #define STATE_CONNECTED         (1 << 0)
 #define STATE_SUBSCRIBED        (1 << 1)
 #define STATE_ENCRYPTED         (1 << 2)
-
-
-typedef enum MessageState {
-    // Ready to receive data; data is rx
-    MessageStateReady     = 0,
-
-    // Receiving data; data = rx
-    MessageStateReceiving,
-
-    // Received data; data = rx
-    MessageStateReceived,
-
-    // Processing data; data = tx
-    MessageStateProcessing,
-
-    // Sending data; data = tx
-    MessageStateSending
-} MessageState;
-
-// Length of CBOR overhead for replys (@TODO: too big, resize)
-#define CBOR_HEADER         (128)
-
-#define METHOD_LENGTH       (32)
-
-typedef struct Message {
-    // @TODO:
-    StaticSemaphore_t lockBuffer;
-    SemaphoreHandle_t lock;
-
-    // An ID to reply with
-    uint32_t replyId;
-
-    // Unique id for each message
-    uint32_t id;
-
-    // The CBOR payload received over the wire
-    FfxCborCursor payload;
-
-    // A NULL-terminated copy of the method in the payload
-    char method[METHOD_LENGTH];
-
-    // The params in the payload
-    FfxCborCursor params;
-
-    MessageState state;
-
-    // The buffer to hold an incoming message
-    uint8_t data[MAX_MESSAGE_SIZE + CBOR_HEADER];
-
-    // Next expected offset for the incoming message
-    size_t offset;
-
-    // Total expected message size
-    size_t length;
-} Message;
-
-static uint32_t nextMessageId = 1;
-
-static Message msg = { 0 };
-
 
 typedef struct Connection {
     uint32_t state;
@@ -114,7 +55,68 @@ typedef struct Connection {
     bool enabled;
 } Connection;
 
+
+typedef enum MessageState {
+    // Ready to receive data; data is rx
+    MessageStateReady     = 0,
+
+    // Receiving data; data = rx
+    MessageStateReceiving,
+
+    // Received data; data = rx
+    MessageStateReceived,
+
+    // Processing data; data = tx
+    MessageStateProcessing,
+
+    // Sending data; data = tx
+    MessageStateSending
+} MessageState;
+
+
+// Length of CBOR overhead for replys
+#define CBOR_OVERHEAD           (84)
+
+#define MAX_METHOD_LENGTH       (32)
+
+typedef struct Message {
+    // @TODO:
+    StaticSemaphore_t lockBuffer;
+    SemaphoreHandle_t lock;
+
+    // An ID to reply with
+    uint32_t replyId;
+
+    // Unique id for each message
+    uint32_t id;
+
+    // The CBOR payload received over the wire
+    FfxCborCursor payload;
+
+    // A NULL-terminated copy of the method in the payload
+    char method[MAX_METHOD_LENGTH];
+
+    // The params in the payload
+    FfxCborCursor params;
+
+    MessageState state;
+
+    // The buffer to hold an incoming message
+    uint8_t data[MAX_MESSAGE_SIZE + CBOR_OVERHEAD];
+
+    // Next expected offset for the incoming message
+    size_t offset;
+
+    // Total expected message size
+    size_t length;
+} Message;
+
+
+static uint32_t nextMessageId = 1;
+
 static Connection conn = { 0 };
+static Message msg = { 0 };
+
 
 
 ///////////////////////////////
@@ -281,6 +283,7 @@ static bool dequeueCommand(uint8_t *buffer, size_t *length) {
             buffer[0] = STATUS_OK;
         }
     } while(0);
+
     xSemaphoreGive(commands.lock);
 
     return (*length) != 0;
@@ -317,9 +320,9 @@ static uint32_t checkMessage(FfxCborCursor *_cursor) {
     status = ffx_cbor_getLength(&cursor, &length);
     if (status || length == 0) { return 0; }
 
-    if (length > METHOD_LENGTH - 1) { length = METHOD_LENGTH - 1; }
+    if (length > MAX_METHOD_LENGTH - 1) { length = MAX_METHOD_LENGTH - 1; }
 
-    memset(msg.method, 0, METHOD_LENGTH);
+    memset(msg.method, 0, MAX_METHOD_LENGTH);
     status = ffx_cbor_copyData(&cursor, (uint8_t*)msg.method, length);
     msg.method[length] = 0;
 
@@ -400,7 +403,6 @@ static void processMessage() {
 
 ///////////////////////////////
 // BLE goop
-
 
 
 static void handleRequest(uint8_t *req, size_t length) {
@@ -570,24 +572,9 @@ static int gattAccess(uint16_t conn_handle, uint16_t attr_handle,
         return (rc == 0) ? 0: BLE_ATT_ERR_INSUFFICIENT_RES;
     }
 
+    // Reading the Content handle isn't supported; use indicate
     if (uuid == UUID_CHR_FSP_CONTENT) {
-        // @TODO: does this still make sense? What should happen for
-        //        an unsolicited read operation?
-
-        if (!conn.enabled) {
-            // { v: 1, e: "HUP" }
-            uint8_t data[] = {
-                0x00, 162, 97, 118, 1, 97, 101, 99,  72, 85, 80
-            };
-            int rc = os_mbuf_append(ctx->om, data, sizeof(data));
-            return (rc == 0) ? 0: BLE_ATT_ERR_INSUFFICIENT_RES;
-        }
-
-        // { v: 1, e: "RDY" }
-        uint8_t data[] = {
-            0x00, 162, 97, 118, 1, 97, 101, 99,  82, 68, 89
-        };
-        int rc = os_mbuf_append(ctx->om, data, sizeof(data));
+        int rc = os_mbuf_append(ctx->om, NULL, 0);
         return (rc == 0) ? 0: BLE_ATT_ERR_INSUFFICIENT_RES;
     }
 
@@ -598,11 +585,7 @@ static int gattAccess(uint16_t conn_handle, uint16_t attr_handle,
         return (rc == 0) ? 0: BLE_ATT_ERR_INSUFFICIENT_RES;
     }
 
-    static int foo = 0;
-    char buffer[9] = { 0 };
-    buffer[0] = foo++;
-    int rc = os_mbuf_append(ctx->om, &buffer, sizeof(buffer));
-
+    int rc = os_mbuf_append(ctx->om, NULL, 0);
     return (rc == 0) ? 0: BLE_ATT_ERR_INSUFFICIENT_RES;
 }
 
@@ -937,10 +920,10 @@ static void sendMessage(FfxCborBuilder *builder) {
 
 // Caller MUST own msg.lock
 static void prepareReply(FfxCborBuilder *builder) {
-    memset(msg.data, 0, MAX_MESSAGE_SIZE + CBOR_HEADER);
+    memset(msg.data, 0, MAX_MESSAGE_SIZE + CBOR_OVERHEAD);
 
     ffx_cbor_build(builder, &msg.data[32],
-      MAX_MESSAGE_SIZE + CBOR_HEADER - 32);
+      MAX_MESSAGE_SIZE + CBOR_OVERHEAD - 32);
 
     ffx_cbor_appendMap(builder, 3);
     {
