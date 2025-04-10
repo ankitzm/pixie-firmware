@@ -22,13 +22,14 @@ void delay(uint32_t duration);
 /////////////////////////////
 // Task functions
 
-char* taskName();
+const char* taskName();
 
 
 /////////////////////////////
 // Console functions
 
-void dumpBuffer(char *header, uint8_t *buffer, size_t length);
+size_t readBuffer(const char *data, uint8_t *buffer, size_t length);
+void dumpBuffer(const char *header, uint8_t *buffer, size_t length);
 
 
 #ifdef __cplusplus
