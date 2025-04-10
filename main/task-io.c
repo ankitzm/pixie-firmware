@@ -11,23 +11,13 @@
 
 #include "config.h"
 
-#include "panel.h"
 #include "events.h"
+#include "panel.h"
 #include "pixels.h"
 #include "utils.h"
 
 #include "images/image-background.h"
 #include "images/image-pixie.h"
-
-
-
-#define FRAMERATE          (60)
-#define FRAMEDELAY         (1000 / ((FRAMERATE) + 1))
-
-// Idea: If current rate of last 60 frames if going to be early,
-// use delay_hi
-//#define FRAME_DELAY_LO     (1000 / (FRAMERATE))
-//#define FRAME_DELAY_HI     ((FRAME_DELAY_LO) + 1)
 
 
 ///////////////////////////////
@@ -396,6 +386,7 @@ void taskIoFunc(void* pvParameter) {
         pixels_animatePixel(pixels, 3, animateColorRamp, 780, 0, colorRamp4);
     }
 
+    FfxNode fpsLabel = NULL;
     {
         uint32_t t0 = ticks();
 
@@ -422,6 +413,13 @@ void taskIoFunc(void* pvParameter) {
 
             runPixieComplete(pixie, FfxSceneActionStopFinal, NULL);
         }
+
+        fpsLabel = ffx_scene_createLabel(scene, FfxFontMediumBold, "0");
+        ffx_sceneGroup_appendChild(root, fpsLabel);
+        ffx_sceneNode_setPosition(fpsLabel, ffx_point(235, 235));
+        ffx_sceneLabel_setOutlineColor(fpsLabel, COLOR_BLACK);
+        ffx_sceneLabel_setAlign(fpsLabel, FfxTextAlignRight |
+          FfxTextAlignBaseline);
 
         ffx_scene_sequence(scene);
         ffx_scene_dump(scene);
@@ -488,13 +486,41 @@ void taskIoFunc(void* pvParameter) {
                 .render = { .ticks = now }
             });
 
-            BaseType_t didDelay = xTaskDelayUntil(&lastFrameTime, FRAMEDELAY);
+            static uint32_t frameCount = 0;
+            static uint32_t lastFpsUpdate = 0;
+
+            frameCount++;
+            uint32_t dt = now - lastFpsUpdate;
+            if (dt > 1000) {
+                uint32_t fps10 = 10000 * frameCount / dt;
+                ffx_sceneLabel_setTextFormat(fpsLabel, "%d.%d", fps10 / 10,
+                  fps10 % 10);
+                frameCount = 0;
+                lastFpsUpdate = now;
+            }
+
+            // We stagger 16ms and 17ms delays to acheive a target framerate
+            // of 60.03 (using 60 directly results in 59.9 due to timer
+            // overhead). This value was generated using a script that
+            // searched all possible combinations. Each bit represents the
+            // amount to add to 16 to acheive the target.
+            //
+            // See: docs/research/compute-ratio.mjs
+            static uint32_t frameStagger = 0;
+            frameStagger >>= 1;
+            if (frameStagger == 0) {
+                frameStagger = 0b10101101101101101101101101101;
+            }
+
+            BaseType_t didDelay = xTaskDelayUntil(&lastFrameTime,
+              16 + (frameStagger & 0x1));
 
             // We are falling behind, catch up by dropping frames
             if (didDelay == pdFALSE) {
                 //printf("Frame dropped dt=%ld\n", now - lastFrameTime);
                 lastFrameTime = ticks();
             }
+
         }
 
         fflush(stdout);
