@@ -1829,11 +1829,12 @@ bool ffx_pk_signSecp256k1(uint8_t *privkey, uint8_t *digest,
 
 bool ffx_pk_computePubkeySecp256k1(uint8_t *privkey,
   uint8_t *pubkey) {
-    return uECC_compute_public_key(privkey, pubkey, uECC_secp256k1());
+    pubkey[0] = 0x04;
+    return uECC_compute_public_key(privkey, &pubkey[1], uECC_secp256k1());
 }
 
 void ffx_pk_compressPubkeySecp256k1(uint8_t *pubkey, uint8_t *compPubkey) {
-    uECC_compress(pubkey, compPubkey, uECC_secp256k1());
+    uECC_compress(&pubkey[1], compPubkey, uECC_secp256k1());
 }
 
 void ffx_pk_decompressPubkeySecp256k1(uint8_t *compPubkey, uint8_t *pubkey) {
@@ -1869,11 +1870,12 @@ bool ffx_pk_signP256(uint8_t *privkey, uint8_t *digest,
 
 bool ffx_pk_computePublicKeyP256(uint8_t *privkey,
   uint8_t *pubkey) {
-    return uECC_compute_public_key(privkey, pubkey, uECC_secp256r1());
+    pubkey[0] = 0x04;
+    return uECC_compute_public_key(privkey, &pubkey[1], uECC_secp256r1());
 }
 
 void ffx_pk_compressPubkeyP256(uint8_t *uncompressed, uint8_t *compressed) {
-    uECC_compress(uncompressed, compressed, uECC_secp256r1());
+    uECC_compress(&uncompressed[1], compressed, uECC_secp256r1());
 }
 
 void ffx_pk_decompressPubkeyP256(uint8_t *compPubkey, uint8_t *pubkey) {

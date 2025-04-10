@@ -78,7 +78,7 @@ typedef struct FfxCborCursor {
     // The index within the container of the cursor.
     size_t containerIndex;
 
-    FfxCborStatus status;
+//    FfxCborStatus status;
 } FfxCborCursor;
 
 
@@ -92,20 +92,16 @@ typedef struct FfxCborBuilder {
     size_t length;
     size_t offset;
 
-    // Will always allot the maximum bytes for a type; useful
-    // for in-place re-encoding where the extra space can
-    // be used for intermediate data during transform.
-    bool sparse;
-
-    FfxCborStatus status;
+//    FfxCborStatus status;
 } FfxCborBuilder;
 
 
 // Detects if an error occurred during crawl or build... @TODO
-FfxCborStatus ffx_cbor_getStatus(FfxCborCursor *cursor);
-FfxCborStatus ffx_cbor_getBuildStatus(FfxCborCursor *cursor);
+//FfxCborStatus ffx_cbor_getWalkStatus(FfxCborCursor *cursor);
+//FfxCborStatus ffx_cbor_getBuildStatus(FfxCborBuilder *builder);
+//FfxCborStatus ffx_cbor_verify(uint8_t *data, size_t *length);
 
-void ffx_cbor_init(FfxCborCursor *cursor, uint8_t *data, size_t length);
+void ffx_cbor_walk(FfxCborCursor *cursor, uint8_t *data, size_t length);
 void ffx_cbor_clone(FfxCborCursor *dst, FfxCborCursor *src);
 
 /**
@@ -187,57 +183,91 @@ FfxCborStatus _ffx_cbor_next(FfxCborCursor *cursor);
 void ffx_cbor_dump(FfxCborCursor *cursor);
 
 
-// Initialize a CBOR builder.
+/**
+ *  Initialize a CBOR builder.
+ */
 void ffx_cbor_build(FfxCborBuilder *builder, uint8_t *data, size_t length);
 
-// Initialize a CBOR builder.
-void ffx_cbor_buildSparse(FfxCborBuilder *builder, uint8_t *data,
-  size_t length);
-
+/**
+ *  The current length of the CBOR output.
+ */
 size_t ffx_cbor_getBuildLength(FfxCborBuilder *builder);
 
-// Append a boolean.
+/**
+ *  Append a boolean.
+ */
 FfxCborStatus ffx_cbor_appendBoolean(FfxCborBuilder *builder, bool value);
 
-// Append a null value.
+/**
+ *  Append a null value.
+ */
 FfxCborStatus ffx_cbor_appendNull(FfxCborBuilder *builder);
 
-// Append a numeric value.
+/**
+ *  Append a numeric value.
+ */
 FfxCborStatus ffx_cbor_appendNumber(FfxCborBuilder *builder, uint64_t value);
 
-// Append data.
+/**
+ *  Append data.
+ */
 FfxCborStatus ffx_cbor_appendData(FfxCborBuilder *builder, uint8_t *data,
   size_t length);
 
-// Append a string.
+/**
+ *  Append a string.
+ */
 FfxCborStatus ffx_cbor_appendString(FfxCborBuilder *builder, char* str);
 
-// Begin an Array of count items long. After calling this, call
-// other cbor_append* methods count times.
+/**
+ *  Begin an Array of %%count%% items long.
+ *
+ *  After calling this, the next %%count%% ffx_cbor_append* calls will
+ *  place the item into this array.
+ */
 FfxCborStatus ffx_cbor_appendArray(FfxCborBuilder *builder, size_t count);
 
-// Begin a Map of count items long. After calling this, call
-// other cbor_append* methods 2 * count times, once for each key
-// and value of the children.
+/**
+ *  Begin a Map of %%count%% items long.
+ *
+ *  After calling this, the next %%count%% * 2 append calls will
+ *  place the item into this mapping.
+ *
+ *  Each item should be use [[ffx_cbor_appendString]] for the key
+ *  followed by any ffx_cbor_append*.
+ */
 FfxCborStatus ffx_cbor_appendMap(FfxCborBuilder *builder, size_t count);
 
-// Begin a dynamic length Array. The tag should be updated with
-// cbor_adjustCount once the number of items in the array is known.
+/**
+ *  Appends a Dynamic Array.
+ *
+ *  Similar to [[ffx_fbor_appendArray]], but will reserve additional
+ *  space for the count (initially 0). The [[ffx_cbor_adjustCount]]
+ *  must be used later to update the count to the correct value using
+ *  the value stored in %%tag%%.
+ */
 FfxCborStatus ffx_cbor_appendArrayMutable(FfxCborBuilder *builder,
   FfxCborBuilderTag *tag);
 
-// Begin a dynamic length Map. The tag should be updated with
-// cbor_adjustCount once the number of items in the array is known.
+/**
+ *  Appends a Dynamic Map.
+ *
+ *  Similar to [[ffx_fbor_appendMap]], but will reserve additional
+ *  space for the count (initially 0). The [[ffx_cbor_adjustCount]]
+ *  must be used later to update the count to the correct value using
+ *  the value stored in %%tag%%.
+ */
 FfxCborStatus ffx_cbor_appendMapMutable(FfxCborBuilder *builder,
   FfxCborBuilderTag *tag);
 
-// Adjust the number of elements in a dynamic array or map appended
-// using cbor_appendArrayMutable or cbor_appendMapMutable.
+/**
+ *  Update the count of a Dynamic Array or Dynamic Map
+ */
 void ffx_cbor_adjustCount(FfxCborBuilder *builder, FfxCborBuilderTag tag,
   uint16_t count);
 
 /**
- *  Append raw CBRO-encoded %%data%% to an entry in %%builder%%.
+ *  Append raw CBOR-encoded %%data%% to an entry in %%builder%%.
  */
 FfxCborStatus ffx_cbor_appendCborRaw(FfxCborBuilder *builder, uint8_t *data,
   size_t length);

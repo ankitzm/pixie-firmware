@@ -1,3 +1,8 @@
+/**
+ * 
+ *  See: https://datatracker.ietf.org/doc/html/rfc8949
+ */
+
 #include <stdio.h>
 #include <string.h>
 
@@ -108,7 +113,7 @@ static uint8_t* _getBytes(FfxCborCursor *cursor, FfxCborType *type,
 ///////////////////////////////
 // Crawler
 
-void ffx_cbor_init(FfxCborCursor *cursor, uint8_t *data, size_t length) {
+void ffx_cbor_walk(FfxCborCursor *cursor, uint8_t *data, size_t length) {
     cursor->data = data;
     cursor->length = length;
     cursor->offset = 0;
@@ -476,9 +481,22 @@ static void _dump(FfxCborCursor *cursor) {
             break;
         }
 
-        case FfxCborTypeArray:
-            printf("<ARRAY: not impl>");
+        case FfxCborTypeArray: {
+            printf("[ ");
+            bool first = true;
+            FfxCborCursor follow;
+            ffx_cbor_clone(&follow, cursor);
+            FfxCborStatus status = ffx_cbor_firstValue(&follow, NULL);
+            while (status == FfxCborStatusOK) {
+                if (!first) { printf(", "); }
+                first = false;
+                _dump(&follow);
+                status = ffx_cbor_nextValue(&follow, NULL);
+            }
+
+            printf(" ]");
             break;
+        }
 
         case FfxCborTypeMap: {
             printf("{ ");

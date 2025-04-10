@@ -209,6 +209,9 @@ size_t ffx_rlp_finalize(FfxRlpBuilder *rlp) {
     rlp->offset = 0;
 
     // Finalize recursively
-    return finalize(rlp);
+    size_t length = finalize(rlp);
+
+    rlp->offset = length;
+    return length;
 }
 

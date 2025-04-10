@@ -49,6 +49,12 @@ void ffx_rlp_build(FfxRlpBuilder *builder, uint8_t *data, size_t length);
  */
 size_t ffx_rlp_finalize(FfxRlpBuilder *builder);
 
+/**
+ *  Returns the length of finalized RLP data.
+ *
+ *  This is the same value returned from [[ffx_rlp_finalize]].
+ */
+size_t ffx_rlp_getBuildLength(FfxRlpBuilder *builder);
 
 /**
  *  Append a Data.

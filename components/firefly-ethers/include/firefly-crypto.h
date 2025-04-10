@@ -32,6 +32,7 @@ bool ffx_pk_recoverPubkeySecp256k1(uint8_t *digest,
 bool ffx_pk_computePubkeySecp256k1(uint8_t *privkey,
   uint8_t *pubkey);
 
+// @TODO: Test these!!
 void ffx_pk_compressPubkeySecp256k1(uint8_t *pubkey, uint8_t *compPubkey);
 void ffx_pk_decompressPubkeySecp256k1(uint8_t *compPubkey, uint8_t *pubkey);
 
