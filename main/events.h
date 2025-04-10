@@ -9,9 +9,6 @@ extern "C" {
 
 #include "firefly-cbor.h"
 
-// Needed for PanelContext... Move?
-//#include "firefly-scene.h"
-//#include "freertos/FreeRTOS.h"
 
 typedef uint16_t Keys;
 
@@ -28,6 +25,7 @@ typedef enum Key {
     KeyAll           = (0xff),
 } Key;
 
+#define KeyAll       (KeyCancel | KeyOk | KeyNorth | KeySouth)
 #define KeyReset     (KeyCancel | KeyNorth)
 
 
@@ -96,7 +94,6 @@ typedef struct EventCustomProps {
     uint8_t data[32];
 } EventCustomProps;
 
-// @TODO: rename; remove "Event" suffix;
 typedef union EventPayloadProps {
     EventRenderSceneProps render;
     EventKeysProps keys;
