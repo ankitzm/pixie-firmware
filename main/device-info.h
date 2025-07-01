@@ -8,6 +8,9 @@ extern "C" {
 
 #include <stdint.h>
 
+#include "firefly-ecc.h"
+
+
 #define VERSION              (0x00000101)
 
 #define MANUFACTURER_NAME    ("Firefly")
@@ -28,9 +31,14 @@ typedef enum DeviceStatus {
     DeviceStatusTruncated       = 10,
 } DeviceStatus;
 
+//typedef DeviceCapability {
+//    DeviceCapabilityDPad        = (1 << 0),
+//} DeviceCapability;
 
 uint32_t device_modelNumber();
 uint32_t device_serialNumber();
+
+//uint32_t device_capabilities();
 
 DeviceStatus device_init();
 
@@ -96,7 +104,7 @@ DeviceStatus device_attest(uint8_t *challenge, DeviceAttestation *attest);
  *  before returned to the system and general cryptographic protections
  *  should be applied to it.
  */
-uint8_t* device_testPrivateKey(uint8_t *data);
+bool device_testPrivateKey(FfxEcPrivkey *privkey, uint32_t account);
 
 
 #ifdef __cplusplus
