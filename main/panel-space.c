@@ -89,17 +89,17 @@ static void render(EventPayload event, void *_app) {
     FfxPoint aliens = ffx_sceneNode_getPosition(space->aliens);
 
     // Finished animating the win
-    if (ship.x < -50) { panel_pop(); }
+    if (ship.x < -50) { panel_pop(RESULT_WIN); }
 
     // Finished animating the loss
-    if (aliens.x > 400) { panel_pop(); }
+    if (aliens.x > 400) { panel_pop(RESULT_LOSE); }
 
     // Either hasn't started yet or game over
     if (!space->running) { return; }
 
     // Reset button heald down for more than 3s
     if (space->keys == KeyOk && ticks() - space->resetTimer > 3000) {
-        panel_pop();
+        panel_pop(RESULT_QUIT);
     }
 
     // Mode left/right if keys are being held down
@@ -312,6 +312,6 @@ static int _init(FfxScene scene, FfxNode panel, void* panelState, void* arg) {
     return 0;
 }
 
-void pushPanelSpace() {
-    panel_push(_init, sizeof(SpaceState), PanelStyleSlideLeft, NULL);
+uint32_t pushPanelSpace() {
+    return panel_push(_init, sizeof(SpaceState), PanelStyleSlideLeft, NULL);
 }

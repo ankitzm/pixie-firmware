@@ -20,8 +20,10 @@ typedef struct _PanelInit {
     int id;
     size_t stateSize;
     void *arg;
-    uint32_t ready;
     PanelStyle style;
+
+    SemaphoreHandle_t done;
+    uint32_t result;
 } _PanelInit;
 
 PanelContext *activePanel = NULL;
@@ -36,11 +38,13 @@ static void _panelFocus(FfxNode node, FfxSceneActionStop stopType, void *arg) {
 static void _panelBlur(FfxNode node, FfxSceneActionStop stopType, void *arg) {
 
     // Remove the node from the scene graph
-    ffx_sceneNode_remove(node, true);
+    ffx_sceneNode_remove(node);
 
+    /*
     panel_emitEvent(EventNamePanelFocus, (EventPayloadProps){
         .panel = { .id = activePanel->id }
     });
+    */
 }
 
 
@@ -87,20 +91,26 @@ static void _panelInit(void *_arg) {
 
     // Create the Panel context (attached to the task tag)
     PanelContext panel = { 0 };
+
     panel.id = panelInit->id;;
     panel.state = state;
     panel.events = events;
     panel.node = node;
     panel.parent = activePanel;
     panel.style = panelInit->style;
+
+    panel.done = panelInit->done;
+    panel.result = &panelInit->result;
+
     vTaskSetApplicationTaskTag(NULL, (void*)&panel);
 
     activePanel = &panel;
 
-    panelInit->ready = 1;
-
     // Initialize the Panel with the callback
     panelInit->init(scene, panel.node, panel.state, panelInit->arg);
+
+    // Unblock the caller
+    //panelInit->ready = 1;
 
     ffx_sceneGroup_appendChild(ffx_scene_root(scene), node);
 
@@ -143,20 +153,24 @@ static void _panelInit(void *_arg) {
 ///////////////////////////////
 // API
 
-void panel_push(PanelInit init, size_t stateSize, PanelStyle style,
+uint32_t panel_push(PanelInit init, size_t stateSize, PanelStyle style,
   void *arg) {
 
+    /*
     if (activePanel) {
         panel_emitEvent(EventNamePanelBlur, (EventPayloadProps){
             .panel = { .id = activePanel->id }
         });
     }
+    */
 
     static int nextPanelId = 1;
     int panelId = nextPanelId++;
 
     char name[configMAX_TASK_NAME_LEN];
     snprintf(name, sizeof(name), "panel-%d", panelId);
+
+    StaticSemaphore_t doneBuffer;
 
     TaskHandle_t handle = NULL;
     _PanelInit panelInit = { 0 };
@@ -165,22 +179,28 @@ void panel_push(PanelInit init, size_t stateSize, PanelStyle style,
     panelInit.style = style;
     panelInit.stateSize = stateSize;
     panelInit.arg = arg;
+    panelInit.done = xSemaphoreCreateBinaryStatic(&doneBuffer);
 
     BaseType_t status = xTaskCreatePinnedToCore(&_panelInit, name,
-      4096 + stateSize, &panelInit, 1, &handle, 0);
-        printf("[main] init panel task: status=%d\n", status);
-        assert(handle != NULL);
+      (4 * 4096) + stateSize, &panelInit, PRIORITY_APP, &handle, 0);
+    printf("[main] init panel task: status=%d\n", status);
+    assert(handle != NULL);
 
-    while (!panelInit.ready) { delay(2); } // ?? Maybe use event?
+    xSemaphoreTake(panelInit.done, portMAX_DELAY);
+
+    return panelInit.result;
 }
 
-void panel_pop() {
+void panel_pop(uint32_t result) {
     PanelContext *panel = (void*)xTaskGetApplicationTaskTag(NULL);
 
     // Remove all existing events
     events_clearFilters(panel);
 
     activePanel = panel->parent;
+
+    // Store the result of the panel on the Panel owner's stack
+    *(panel->result) = result;
 
     if (panel->style == PanelStyleInstant) {
         ffx_sceneNode_setPosition(activePanel->node, (FfxPoint){
@@ -217,9 +237,11 @@ void panel_pop() {
               0, 300, FfxCurveEaseInQuad, NULL, NULL);
         }
     }
-    // @TODO: move to blur and set a flag to ensure no new events go to
-    //        the dead task
 
+    // Unblock the parent Panel
+    xSemaphoreGive(panel->done);
+
+    // Farewell...
     vTaskDelete(NULL);
 }
 

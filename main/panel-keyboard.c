@@ -143,7 +143,7 @@ static void removeNode(FfxNode node, FfxSceneActionStop stopType, void *_state) 
     ffx_sceneLabel_appendCharacter(state->text, output[0]);
     updateCaret(state);
 
-    ffx_sceneNode_remove(node, true);
+    ffx_sceneNode_remove(node);
 }
 
 static bool selectRow(State *state, int row, bool animated) {

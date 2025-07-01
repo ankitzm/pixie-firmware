@@ -16,6 +16,11 @@ extern "C" {
 #include "events.h"
 #include "panel.h"
 
+#define PRIORITY_PRIME   (2)
+#define PRIORITY_APP     (3)
+#define PRIORITY_IO      (5)
+#define PRIORITY_BLE     (6)
+
 /**
  *  The struct storing a Panels state. This is stored on the stack of
  *  the Panel and is reclaimed when the task exists. It should not have
@@ -23,6 +28,8 @@ extern "C" {
  */
 typedef struct PanelContext {
     QueueHandle_t events;
+    SemaphoreHandle_t done;
+    uint32_t *result;
     int id;
     uint8_t *state;
     FfxNode node;

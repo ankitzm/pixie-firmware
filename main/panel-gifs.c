@@ -41,7 +41,7 @@ static void keyChanged(EventPayload event, void *_state) {
                 ffx_sceneNode_animate(state->menu, animateMenu, &x);
                 state->menuHidden = false;
             } else {
-                panel_pop();
+                panel_pop(42);
             }
             break;
         case KeyOk:
@@ -224,6 +224,6 @@ static int _init(FfxScene scene, FfxNode node, void *_state, void *arg) {
     return 0;
 }
 
-void pushPanelGifs(void *arg) {
-    panel_push(_init, sizeof(State), PanelStyleSlideLeft, arg);
+uint32_t pushPanelGifs(void *arg) {
+    return panel_push(_init, sizeof(State), PanelStyleSlideLeft, arg);
 }

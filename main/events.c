@@ -51,7 +51,8 @@ void events_clearFilters(PanelContext *panel) {
 ///////////////////////////////
 // API
 
-void panel_emitEvent(EventName eventName, EventPayloadProps props) {
+bool panel_emitEvent(EventName eventName, EventPayloadProps props) {
+     bool found = false;
 
      EventDispatch event = { 0 };
 
@@ -70,17 +71,22 @@ void panel_emitEvent(EventName eventName, EventPayloadProps props) {
         } else if (eventName == EventNameRenderScene) {
             if (filter->event != EventNameRenderScene) { continue; }
 
-            event.payload.props = props; // Does this work?
+            event.payload.props = props;
 
         } else if (eventName == EventNameMessage) {
             if (filter->event != EventNameMessage) { continue; }
 
-            event.payload.props = props; // Does this work?
+            event.payload.props = props;
+
+        } else if (eventName == EventNameRadioState) {
+            if (filter->event != eventName) { continue; }
+
+            event.payload.props = props;
 
         } else if (eventName & EventNamePanel) {
             if (filter->event != eventName) { continue; }
 
-            event.payload.props = props; // Does this work?
+            event.payload.props = props;
 
         } else if (eventName & EventNameKeys) {
             if (!(filter->event & EventNameKeys)) { continue; }
@@ -110,12 +116,14 @@ void panel_emitEvent(EventName eventName, EventPayloadProps props) {
         } else if (eventName & EventNameCustom) {
             if (filter->event != eventName) { continue; }
 
-            event.payload.props = props; // Does this work?
+            event.payload.props = props;
 
         } else {
             printf("emit: unknown event: 0x%08x\n", eventName);
             continue;
         }
+
+        found = true;
 
         event.callback = filter->callback;
         event.arg = filter->arg;
@@ -141,6 +149,8 @@ void panel_emitEvent(EventName eventName, EventPayloadProps props) {
     }
 
     xSemaphoreGive(lockEvents);
+
+    return found;
 }
 
 // Caller must own the lockEvents mutex

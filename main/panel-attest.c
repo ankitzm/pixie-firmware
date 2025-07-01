@@ -24,7 +24,7 @@ static void keyChanged(EventPayload event, void *_state) {
             printf("ok\n");
             break;
         case KeyCancel:
-            panel_pop();
+            panel_pop(43);
             break;
     }
 }
@@ -85,6 +85,6 @@ static int _init(FfxScene scene, FfxNode node, void *_state, void *arg) {
     return 0;
 }
 
-void pushPanelAttest(void *arg) {
-    panel_push(_init, sizeof(AttestState), PanelStyleSlideLeft, arg);
+uint32_t pushPanelAttest(void *arg) {
+    return panel_push(_init, sizeof(AttestState), PanelStyleSlideLeft, arg);
 }

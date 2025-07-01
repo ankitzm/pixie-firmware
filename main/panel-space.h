@@ -5,8 +5,11 @@
 extern "C" {
 #endif /* __cplusplus */
 
+#define RESULT_WIN        (1)
+#define RESULT_LOSE       (0)
+#define RESULT_QUIT       (0xff)
 
-void pushPanelSpace();
+uint32_t pushPanelSpace();
 
 
 #ifdef __cplusplus

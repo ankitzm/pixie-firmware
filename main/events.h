@@ -28,37 +28,40 @@ typedef enum Key {
 #define KeyAll       (KeyCancel | KeyOk | KeyNorth | KeySouth)
 #define KeyReset     (KeyCancel | KeyNorth)
 
-
-// Bottom 24 bits are reserved for filter info.
+// [ category: 4 bits ] [ specific: 4 bits ] [ filter info: 24 bits ]
 typedef enum EventName {
     // Render Scene (N.B. filter by equality, bottom bits unused)
-    EventNameRenderScene    = ((0x01) << 24),
+    EventNameRenderScene       = ((0x01) << 24),
 
-    // Message events (N.B. filter by equality, bottom bits unused)
-    EventNameMessage        = ((0x02) << 24),
+    // Connect events; (N.B. filter by equality)
+    EventNameRadioState        = ((0x02) << 24),
 
     // Keypad events; info=keys (N.B. filter by & EventNameKeys)
-    EventNameKeysDown       = ((0x11) << 24),
-    EventNameKeysUp         = ((0x12) << 24),
-//    EventNameKeysPress      = ((0x13) << 24),  // @TODO: type repeat-rate
-    EventNameKeysChanged    = ((0x14) << 24),
-//    EventNameKeysCancelled    = ((0x15) << 24),
-    EventNameKeys           = ((0x10) << 24),
+    EventNameKeysDown          = ((0x11) << 24),
+    EventNameKeysUp            = ((0x12) << 24),
+//    EventNameKeysPress       = ((0x13) << 24),  // @TODO: type repeat-rate
+    EventNameKeysChanged       = ((0x14) << 24),
+//    EventNameKeysCancelled   = ((0x15) << 24),
+    EventNameKeys              = ((0x10) << 24),
 
     // Panel events; (N.B. filter by & EventNamePanel)
-    EventNamePanelFocus     = ((0x21) << 24),
-    EventNamePanelBlur      = ((0x22) << 24),
-    EventNamePanel          = ((0x20) << 24),
+    EventNamePanelFocus        = ((0x21) << 24),
+    //EventNamePanelBlur       = ((0x22) << 24),
+    EventNamePanel             = ((0x20) << 24),
+
+    // Message events (N.B. filter by equality, bottom bits unused)
+    EventNameMessage           = ((0x42) << 24),
 
     // Custom event; (N.B. filter by & EventNameCustom)
-    EventNameCustom         = ((0x80) << 24),
+    EventNameCustom            = ((0x80) << 24),
 
     // Mask to isolate the event type
-    EventNameMask           = ((0xff) << 24),
+    EventNameMask              = ((0xff) << 24),
 
     // Mask to isolate the event category
-    EventNameCategoryMask   = ((0xf0) << 24),
+    EventNameCategoryMask      = ((0xf0) << 24),
 } EventName;
+
 
 typedef struct EventRenderSceneProps {
     uint32_t ticks;
@@ -90,6 +93,16 @@ typedef struct EventMessageProps {
     FfxCborCursor params;
 } EventMessageProps;
 
+typedef enum EventRadioState {
+    EventRadioStateConnect = 1,
+    EventRadioStateDisconnect = 2,
+} EventRadioState;
+
+typedef struct EventRadioProps {
+    int id;
+    EventRadioState state;
+} EventRadioProps;
+
 typedef struct EventCustomProps {
     uint8_t data[32];
 } EventCustomProps;
@@ -100,6 +113,7 @@ typedef union EventPayloadProps {
     EventPanelProps panel;
 //    EventIncomingMessageProps incoming;
     EventMessageProps message;
+    EventRadioProps radio;
     EventCustomProps custom;
 } EventPayloadProps;
 
@@ -111,7 +125,7 @@ typedef struct EventPayload {
 
 typedef void (*EventCallback)(EventPayload event, void* arg);
 
-void panel_emitEvent(EventName eventName, EventPayloadProps props);
+bool panel_emitEvent(EventName eventName, EventPayloadProps props);
 int panel_onEvent(EventName event, EventCallback cb, void* arg);
 void panel_offEvent(int eventId);
 
