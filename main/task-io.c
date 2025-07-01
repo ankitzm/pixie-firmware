@@ -208,7 +208,7 @@ static void executeCallback(EventPayload event, void* arg) {
     Callback *cb = (Callback*)&event.props.custom;
     cb->callFunc(cb->node, cb->stopType, cb->arg);
 }
-
+/*
 static void* sceneSetup(FfxNode node, FfxNodeAnimation,
   void *initArg) {
 
@@ -245,7 +245,7 @@ static void sceneDispatch(void *setupArg,
 
     panel_emitEvent(EventNameCustom | cbid, props);
 }
-
+*/
 static void renderScene(uint8_t *fragment, uint32_t y0, void *context) {
     FfxScene scene = context;
     ffx_scene_render(scene, (uint16_t*)fragment,
@@ -392,8 +392,8 @@ void taskIoFunc(void* pvParameter) {
 
         FfxNode root = ffx_scene_root(scene);
 
-        FfxNode fill = ffx_scene_createFill(scene, 0x0000);
-        ffx_sceneGroup_appendChild(root, fill);
+        //FfxNode fill = ffx_scene_createFill(scene, 0x0000);
+        //ffx_sceneGroup_appendChild(root, fill);
 
         FfxNode bg = ffx_scene_createImage(scene, image_background,
           sizeof(image_background));
@@ -414,7 +414,7 @@ void taskIoFunc(void* pvParameter) {
             runPixieComplete(pixie, FfxSceneActionStopFinal, NULL);
         }
 
-        fpsLabel = ffx_scene_createLabel(scene, FfxFontMediumBold, "0");
+        fpsLabel = ffx_scene_createLabel(scene, FfxFontSmall, "0");
         ffx_sceneGroup_appendChild(root, fpsLabel);
         ffx_sceneNode_setPosition(fpsLabel, ffx_point(235, 235));
         ffx_sceneLabel_setOutlineColor(fpsLabel, COLOR_BLACK);
@@ -497,6 +497,8 @@ void taskIoFunc(void* pvParameter) {
                   fps10 % 10);
                 frameCount = 0;
                 lastFpsUpdate = now;
+
+                //ffx_scene_dumpStats(scene);
             }
 
             // We stagger 16ms and 17ms delays to acheive a target framerate
@@ -520,7 +522,6 @@ void taskIoFunc(void* pvParameter) {
                 //printf("Frame dropped dt=%ld\n", now - lastFrameTime);
                 lastFrameTime = ticks();
             }
-
         }
 
         fflush(stdout);
