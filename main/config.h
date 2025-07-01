@@ -8,7 +8,6 @@ extern "C" {
 
 #define BOARD_REV         (5)
 
-
 #if BOARD_REV == 2
 // The rev.2 board used the CS0 pin for the display. The rev.3
 // board and beyond tie it to ground to save the pin (as the
@@ -40,6 +39,8 @@ extern "C" {
 #define PIN_PIXELS         (9)
 #define PIXEL_COUNT        (1)
 
+#define DEVICE_DPAD       (false)
+
 #elif BOARD_REV == 5
 // The rev.5 board added an addressable LED next to each button
 
@@ -55,6 +56,8 @@ extern "C" {
 
 #define PIN_PIXELS         (9)
 #define PIXEL_COUNT        (4)
+
+#define DEVICE_DPAD       (false)
 
 #else
 

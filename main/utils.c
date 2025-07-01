@@ -22,22 +22,22 @@ const char* taskName() {
 uint8_t readNibble(char c) {
     if (c >= 'a' && c <= 'f') { return 10 + c - 'a'; }
     if (c >= 'A' && c <= 'F') { return 10 + c - 'A'; }
-    return c -= '0';
+    return c - '0';
 }
 
 size_t readBuffer(const char *data, uint8_t *buffer, size_t length) {
     size_t dataLength = strlen(data) & 0xfffffffe;
-
     size_t offset = 0;
     for (int i = 0; i < dataLength; i += 2) {
         if (offset == length) { break; }
-        buffer[offset++] = (readNibble(data[i]) << 4) | readNibble(data[i+1]);
+        buffer[offset++] = (readNibble(data[i]) << 4) |
+          readNibble(data[i + 1]);
     }
 
     return offset;
 }
 
-void dumpBuffer(const char *header, uint8_t *buffer, size_t length) {
+void dumpBuffer(const char *header, const uint8_t *buffer, size_t length) {
     printf("%s 0x", header);
     for (int i = 0; i < length; i++) {
         //if ((i % 16) == 0) { printf("\n    "); }

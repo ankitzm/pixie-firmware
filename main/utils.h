@@ -29,7 +29,7 @@ const char* taskName();
 // Console functions
 
 size_t readBuffer(const char *data, uint8_t *buffer, size_t length);
-void dumpBuffer(const char *header, uint8_t *buffer, size_t length);
+void dumpBuffer(const char *header, const uint8_t *buffer, size_t length);
 
 
 #ifdef __cplusplus
