@@ -20,6 +20,7 @@
 #include "build-defs.h"
 #include "device-info.h"
 #include "events.h"
+#include "panel.h"
 #include "utils.h"
 
 #include "task-ble.h"
@@ -30,13 +31,15 @@ typedef struct Payload {
     uint8_t *data;
 } Payload;
 
-
-#define STATE_CONNECTED         (1 << 0)
-#define STATE_SUBSCRIBED        (1 << 1)
-#define STATE_ENCRYPTED         (1 << 2)
+typedef enum ConnState {
+    ConnStateConnected      = (1 << 0),
+    ConnStateSubscribed     = (1 << 1),
+    ConnStateEncrypted      = (1 << 2),
+} ConnState;
 
 typedef struct Connection {
-    uint32_t state;
+    ConnState state;
+    uint32_t connId;
 
     bool clearToSend;
 
@@ -55,6 +58,15 @@ typedef struct Connection {
     bool enabled;
 } Connection;
 
+#define MAX_LOGGER_LENGTH           (256)
+
+typedef struct Log {
+    StaticSemaphore_t lockBuffer;
+    SemaphoreHandle_t lock;
+
+    char data[MAX_LOGGER_LENGTH];
+    size_t offset, length;
+} Log;
 
 typedef enum MessageState {
     // Ready to receive data; data is rx
@@ -80,7 +92,6 @@ typedef enum MessageState {
 #define MAX_METHOD_LENGTH       (32)
 
 typedef struct Message {
-    // @TODO:
     StaticSemaphore_t lockBuffer;
     SemaphoreHandle_t lock;
 
@@ -112,11 +123,12 @@ typedef struct Message {
 } Message;
 
 
-static uint32_t nextMessageId = 1;
-
 static Connection conn = { 0 };
 static Message msg = { 0 };
+static Log log = { 0 };
 
+
+bool panel_isRadioConnected() { return !!(conn.state & ConnStateConnected); }
 
 
 ///////////////////////////////
@@ -294,55 +306,49 @@ static bool dequeueCommand(uint8_t *buffer, size_t *length) {
 // Message
 
 // Caller must own msg.lock
-static uint32_t checkMessage(FfxCborCursor *_cursor) {
-    FfxCborCursor cursor;
-
-    // Check ID
-
-    ffx_cbor_clone(&cursor, _cursor);
-
-    FfxCborStatus status = ffx_cbor_followKey(&cursor, "id");
-    if (status || ffx_cbor_getType(&cursor) != FfxCborTypeNumber) { return 0; }
-
-    uint64_t replyId;
-    status = ffx_cbor_getValue(&cursor, &replyId);
-    if (replyId == 0 || replyId > 0x7fffffff) { return 0; }
-
+static uint32_t checkMessage(FfxCborCursor cursor) {
 
     // Check Method (and copy it)
+    {
+        FfxCborCursor check = ffx_cbor_followKey(cursor, "method");
+        if (check.error || !ffx_cbor_checkType(check, FfxCborTypeString)) {
+            return 0;
+        }
 
-    ffx_cbor_clone(&cursor, _cursor);
+        FfxDataResult data = ffx_cbor_getData(check);
+        if (data.error || data.length == 0) { return 0; }
 
-    status = ffx_cbor_followKey(&cursor, "method");
-    if (status || ffx_cbor_getType(&cursor) != FfxCborTypeString) { return 0; }
+        size_t safeLength = MIN(data.length, MAX_METHOD_LENGTH - 1);
 
-    size_t length;
-    status = ffx_cbor_getLength(&cursor, &length);
-    if (status || length == 0) { return 0; }
-
-    if (length > MAX_METHOD_LENGTH - 1) { length = MAX_METHOD_LENGTH - 1; }
-
-    memset(msg.method, 0, MAX_METHOD_LENGTH);
-    status = ffx_cbor_copyData(&cursor, (uint8_t*)msg.method, length);
-    msg.method[length] = 0;
-
-    if (status) { return 0; }
-
+        memset(msg.method, 0, MAX_METHOD_LENGTH);
+        memcpy(msg.method, data.bytes, safeLength);
+        msg.method[safeLength] = 0;
+    }
 
     // Check params
+    {
+        FfxCborCursor check = ffx_cbor_followKey(cursor, "params");
+        if (check.error ||
+          !ffx_cbor_checkType(check, FfxCborTypeArray | FfxCborTypeMap)) {
+            return 0;
+        }
+        msg.params = check;
+    }
 
-    ffx_cbor_clone(&cursor, _cursor);
+    // Check ID
+    {
+        FfxCborCursor check = ffx_cbor_followKey(cursor, "id");
+        if (check.error || !ffx_cbor_checkType(check, FfxCborTypeNumber)) {
+            return 0;
+        }
 
-    status = ffx_cbor_followKey(&cursor, "params");
-    if (status) { return 0; }
+        FfxValueResult replyId = ffx_cbor_getValue(check);
+        if (replyId.error || replyId.value == 0 || replyId.value > 0x7fffffff) {
+            return 0;
+        }
 
-    ffx_cbor_clone(&msg.params, &cursor);
-
-    FfxCborType type = ffx_cbor_getType(&cursor);
-
-    if (type != FfxCborTypeArray && type != FfxCborTypeMap) { return 0; }
-
-    return replyId;
+        return replyId.value;
+    }
 }
 
 // Caller MUST own msg.lock
@@ -352,8 +358,53 @@ static void resetMessage() {
     msg.offset = 0;
 }
 
+// Caller MUST own msg.lock
+static FfxCborBuilder prepareReply() {
+    memset(msg.data, 0, MAX_MESSAGE_SIZE + CBOR_OVERHEAD);
+
+    FfxCborBuilder builder = ffx_cbor_build(&msg.data[32],
+      MAX_MESSAGE_SIZE + CBOR_OVERHEAD - 32);
+
+    ffx_cbor_appendMap(&builder, 3);
+    ffx_cbor_appendString(&builder, "v");
+    ffx_cbor_appendNumber(&builder, 1);
+
+    ffx_cbor_appendString(&builder, "id");
+    ffx_cbor_appendNumber(&builder, msg.replyId);
+
+    msg.offset = 0;
+
+    return builder;
+}
+
+// Caller must own msg.lock
+static void sendMessage(FfxCborBuilder *builder) {
+    size_t cborLength = ffx_cbor_getBuildLength(builder);
+
+    printf(">>> (id=%ld => replyId=%ld) ", msg.id, msg.replyId);
+    FfxCborCursor cursor = ffx_cbor_walk(builder->data, cborLength);
+    ffx_cbor_dump(cursor);
+
+    msg.length = cborLength + 32;
+    msg.state = MessageStateSending;
+    msg.id = 0;
+
+    FfxSha256Context ctx;
+    ffx_hash_initSha256(&ctx);
+    ffx_hash_updateSha256(&ctx, &msg.data[32], cborLength);
+    ffx_hash_finalSha256(&ctx, msg.data);
+
+    queueCommandRequest(CMD_RESET);
+
+    // Wake up the task to send the pending message
+    xTaskNotifyGive(conn.task);
+}
+
+
 // Caller must own msg.lock
 static void processMessage() {
+    static uint32_t nextMessageId = 1;
+
     msg.id = nextMessageId++;
 
     if (msg.length < 32) {
@@ -362,7 +413,7 @@ static void processMessage() {
         return;
     }
 
-    dumpBuffer("Process Message", msg.data, msg.length);
+    //dumpBuffer("Process Message", msg.data, msg.length);
 
     uint8_t checksum[32];
     FfxSha256Context ctx;
@@ -376,25 +427,43 @@ static void processMessage() {
         return;
     }
 
-    ffx_cbor_walk(&msg.payload, &msg.data[32], msg.length - 32);
+    msg.payload = ffx_cbor_walk(&msg.data[32], msg.length - 32);
+
+    msg.replyId = checkMessage(msg.payload);
 
     // Dump the CBOR data to the console
-    ffx_cbor_dump(&msg.payload);
+    printf("<<< (id=%ld => replyId=%ld) ", msg.id, msg.replyId);
+    ffx_cbor_dump(msg.payload);
 
-    uint32_t replyId = checkMessage(&msg.payload);
-    msg.replyId = replyId;
-
-    if (replyId) {
+    if (msg.replyId) {
         msg.state = MessageStateReceived;
 
         // The params gets cloned within the emitMessageEvents.
-        panel_emitEvent(EventNameMessage, (EventPayloadProps){
+        bool accept = panel_emitEvent(EventNameMessage, (EventPayloadProps){
             .message = {
-                .id = replyId,
+                .id = msg.id,
                 .method = msg.method,
                 .params = msg.params
             }
         });
+
+        // No panels are currently processing messages
+        if (!accept) {
+            FfxCborBuilder builder = prepareReply();
+
+            // Append the Error payload (error: { code, message })
+            ffx_cbor_appendString(&builder, "error");
+            ffx_cbor_appendMap(&builder, 2);
+            {
+                ffx_cbor_appendString(&builder, "code");
+                ffx_cbor_appendNumber(&builder, 2);
+
+                ffx_cbor_appendString(&builder, "message");
+                ffx_cbor_appendString(&builder, "NOT READY");
+            }
+
+            sendMessage(&builder);
+        }
 
     } else {
         resetMessage();
@@ -512,6 +581,7 @@ static void handleRequest(uint8_t *req, size_t length) {
     }
 }
 
+// 
 static int gattAccess(uint16_t conn_handle, uint16_t attr_handle,
   struct ble_gatt_access_ctxt *ctx, void *arg) {
 
@@ -589,7 +659,7 @@ static int gattAccess(uint16_t conn_handle, uint16_t attr_handle,
     return (rc == 0) ? 0: BLE_ATT_ERR_INSUFFICIENT_RES;
 }
 
-static void _svrRegister(struct ble_gatt_register_ctxt *ctxt, void *arg) {
+static void gattsRegister(struct ble_gatt_register_ctxt *ctxt, void *arg) {
     char buf[BLE_UUID_STR_LEN];
 
     switch (ctxt->op) {
@@ -619,9 +689,9 @@ static void _svrRegister(struct ble_gatt_register_ctxt *ctxt, void *arg) {
     }
 }
 
-static int _gapEvent(struct ble_gap_event *event, void *arg);
+static int gapEvent(struct ble_gap_event *event, void *arg);
 
-static void _advertise() {
+static void advertise() {
     printf("[ble] start advertising\n");
 
     struct ble_hs_adv_fields fields;
@@ -668,7 +738,7 @@ static void _advertise() {
     // Begin advertising
     {
         int rc = ble_gap_adv_start(conn.own_addr_type, NULL,
-          BLE_HS_FOREVER, &adv_params, _gapEvent, NULL);
+          BLE_HS_FOREVER, &adv_params, gapEvent, NULL);
 
         if (rc != 0) {
             MODLOG_DFLT(ERROR, "error enabling advertisement; rc=%d\n", rc);
@@ -677,7 +747,7 @@ static void _advertise() {
     }
 }
 
-static void _onSync(void) {
+static void onSync(void) {
     int rc;
 
     rc = ble_hs_id_infer_auto(0, &conn.own_addr_type);
@@ -687,15 +757,15 @@ static void _onSync(void) {
 
     print_addr("[ble] sync addr=", conn.address);
 
-    _advertise();
+    advertise();
 }
 
-static void _onReset(int reason) {
+static void onReset(int reason) {
     printf("[ble] reset=%d\n", reason);
 }
 
 // /Users/ricmoo/esp/esp-idf/components/bt//host/nimble/nimble/nimble/host/include/host/ble_gap.h
-static int _gapEvent(struct ble_gap_event *event, void *_context) {
+static int gapEvent(struct ble_gap_event *event, void *_context) {
 
     switch (event->type) {
         case BLE_GAP_EVENT_CONNECT:
@@ -705,9 +775,22 @@ static int _gapEvent(struct ble_gap_event *event, void *_context) {
               event->connect.status);
 
             //Connection failed; resume advertising
-            if (event->connect.status != 0) { _advertise(); }
-            conn.conn_handle = event->connect.conn_handle;
-            conn.state = STATE_CONNECTED;
+            if (event->connect.status != 0) {
+                advertise();
+
+            } else {
+                static uint32_t nextConnId = 1;
+
+                conn.conn_handle = event->connect.conn_handle;
+                conn.connId = nextConnId++;
+                conn.state = ConnStateConnected;
+
+                resetMessage();
+
+                panel_emitEvent(EventNameRadioState, (EventPayloadProps){
+                    .radio = { .id = conn.connId, state: EventRadioStateConnect }
+                });
+            }
 
             return 0;
 
@@ -717,8 +800,12 @@ static int _gapEvent(struct ble_gap_event *event, void *_context) {
             conn.state = 0;
             conn.conn_handle = 0;
 
+            panel_emitEvent(EventNameRadioState, (EventPayloadProps){
+                .radio = { .id = conn.connId, state: EventRadioStateDisconnect }
+            });
+
             // Connection terminated; resume advertising
-            _advertise();
+            advertise();
             return 0;
 
         case BLE_GAP_EVENT_CONN_UPDATE:
@@ -733,7 +820,7 @@ static int _gapEvent(struct ble_gap_event *event, void *_context) {
             printf("[ble] adv_complete: reason=%d\n",
               event->adv_complete.reason);
 
-            _advertise();
+            advertise();
 
             return 0;
 
@@ -744,7 +831,7 @@ static int _gapEvent(struct ble_gap_event *event, void *_context) {
               event->subscribe.cur_notify, event->subscribe.prev_indicate,
               event->subscribe.cur_indicate);
 
-            conn.state |= STATE_SUBSCRIBED;
+            conn.state |= ConnStateSubscribed;
 
             return 0;
 
@@ -860,7 +947,7 @@ static int _gapEvent(struct ble_gap_event *event, void *_context) {
     return 0;
 }
 
-static void _runTask() {
+static void runTask() {
     printf("[ble] BLE Host Task Started\n");
 
     // Runs until nimble_port_stop() is called
@@ -886,55 +973,19 @@ bool panel_acceptMessage(uint32_t id, FfxCborCursor *params) {
     xSemaphoreTake(msg.lock, portMAX_DELAY);
 
     if (msg.state != MessageStateReceived || id == 0 || id != msg.id) {
+        printf("Wrong accept message: id=%ld msg.id=%ld replyId=%ld\n", id,
+          msg.id, msg.replyId);
         xSemaphoreGive(msg.lock);
         return false;
     }
 
     msg.state = MessageStateProcessing;
 
-    if (params) { ffx_cbor_clone(params, &msg.params); }
+    if (params) { *params = msg.params; }
 
     xSemaphoreGive(msg.lock);
 
     return true;
-}
-
-// Caller must own msg.lock
-static void sendMessage(FfxCborBuilder *builder) {
-    size_t cborLength = ffx_cbor_getBuildLength(builder);
-
-    msg.length = cborLength + 32;
-    msg.state = MessageStateSending;
-    msg.id = 0;
-
-    FfxSha256Context ctx;
-    ffx_hash_initSha256(&ctx);
-    ffx_hash_updateSha256(&ctx, &msg.data[32], cborLength);
-    ffx_hash_finalSha256(&ctx, msg.data);
-
-    queueCommandRequest(CMD_RESET);
-
-    // Wake up the task to send the pending message
-    xTaskNotifyGive(conn.task);
-}
-
-// Caller MUST own msg.lock
-static void prepareReply(FfxCborBuilder *builder) {
-    memset(msg.data, 0, MAX_MESSAGE_SIZE + CBOR_OVERHEAD);
-
-    ffx_cbor_build(builder, &msg.data[32],
-      MAX_MESSAGE_SIZE + CBOR_OVERHEAD - 32);
-
-    ffx_cbor_appendMap(builder, 3);
-    {
-        ffx_cbor_appendString(builder, "v");
-        ffx_cbor_appendNumber(builder, 1);
-
-        ffx_cbor_appendString(builder, "id");
-        ffx_cbor_appendNumber(builder, msg.replyId);
-    }
-
-    msg.offset = 0;
 }
 
 bool panel_sendErrorReply(uint32_t id, uint32_t code, char *message) {
@@ -944,12 +995,13 @@ bool panel_sendErrorReply(uint32_t id, uint32_t code, char *message) {
     xSemaphoreTake(msg.lock, portMAX_DELAY);
 
     if (id != msg.id || msg.state != MessageStateProcessing) {
+        printf("Wrong error reply: id=%ld msg.id=%ld replyId=%ld\n", id,
+          msg.id, msg.replyId);
         xSemaphoreGive(msg.lock);
         return false;
     }
 
-    FfxCborBuilder builder;
-    prepareReply(&builder);
+    FfxCborBuilder builder = prepareReply();
 
     // Append the Error payload (error: { code, message })
     ffx_cbor_appendString(&builder, "error");
@@ -974,16 +1026,16 @@ bool panel_sendReply(uint32_t id, FfxCborBuilder *result) {
 
     xSemaphoreTake(msg.lock, portMAX_DELAY);
 
-    if (id == 0 || id != msg.id) { return false; }
+    if (id == 0 || id != msg.id || msg.state != MessageStateProcessing ||
+      ffx_cbor_getBuildLength(result) > MAX_MESSAGE_SIZE) {
+        printf("Wrong reply: id=%ld msg.id=%ld replyId=%ld\n", id, msg.id,
+          msg.replyId);
 
-    if (id != msg.id || ffx_cbor_getBuildLength(result) > MAX_MESSAGE_SIZE ||
-      msg.state != MessageStateProcessing) {
         xSemaphoreGive(msg.lock);
         return false;
     }
 
-    FfxCborBuilder builder;
-    prepareReply(&builder);
+    FfxCborBuilder builder = prepareReply();
 
     // Append the payload
     ffx_cbor_appendString(&builder, "result");
@@ -996,8 +1048,42 @@ bool panel_sendReply(uint32_t id, FfxCborBuilder *result) {
     return true;
 }
 
+void panel_disconnect() {
+    int rc = ble_gap_terminate(conn.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+    if (rc != 0) {
+        printf("Failed to disconnect; rc = %d\n", rc);
+    } else {
+        printf("Disconnect initiated\n");
+    }
+}
+
 ///////////////////////////////
 // BLE Task API
+
+static bool sendLog(uint8_t *buffer, size_t *length) {
+    xSemaphoreTake(log.lock, portMAX_DELAY);
+
+    if (log.length) {
+        size_t l = log.length;
+        if (l > MAX_LOGGER_LENGTH) { l = MAX_LOGGER_LENGTH; }
+
+        size_t offset = log.offset;
+        for (int i = 0; i < l; i++) {
+            char c = log.data[offset % MAX_LOGGER_LENGTH];
+            if (c == 0) { break; }
+            buffer[i] = c;
+            offset++;
+        }
+        *length = offset;
+
+        log.offset = (log.offset + offset) % MAX_LOGGER_LENGTH;
+        log.length -= offset;
+    }
+
+    xSemaphoreGive(log.lock);
+
+    return (*length) != 0 ;
+}
 
 static bool sendMessageChunk(uint8_t *buffer, size_t *length) {
     xSemaphoreTake(msg.lock, portMAX_DELAY);
@@ -1048,6 +1134,9 @@ void taskBleFunc(void* pvParameter) {
 
     commands.lock = xSemaphoreCreateBinaryStatic(&commands.lockBuffer);
     xSemaphoreGive(commands.lock);
+
+    log.lock = xSemaphoreCreateBinaryStatic(&log.lockBuffer);
+    xSemaphoreGive(log.lock);
 
     msg.lock = xSemaphoreCreateBinaryStatic(&msg.lockBuffer);
     xSemaphoreGive(msg.lock);
@@ -1131,6 +1220,7 @@ void taskBleFunc(void* pvParameter) {
             0, // No more characteristics in this service
         } }
     }, {
+        // Serive: Battery
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
         .uuid = BLE_UUID16_DECLARE(UUID_SVC_BATTERY_LEVEL),
         .characteristics = (struct ble_gatt_chr_def[]) { {
@@ -1175,7 +1265,7 @@ void taskBleFunc(void* pvParameter) {
         0, // No more services
     } };
 
-    // Initialize NVS — it is used to store PHY calibration data
+    // Initialize NVS; it is used to store PHY calibration data
     {
         esp_err_t status = nvs_flash_init();
         if (status == ESP_ERR_NVS_NO_FREE_PAGES || status == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -1192,9 +1282,9 @@ void taskBleFunc(void* pvParameter) {
     }
 
     // Initialize the NimBLE host configuration
-    ble_hs_cfg.gatts_register_cb = _svrRegister;
-    ble_hs_cfg.reset_cb = _onReset;
-    ble_hs_cfg.sync_cb = _onSync;
+    ble_hs_cfg.gatts_register_cb = gattsRegister;
+    ble_hs_cfg.reset_cb = onReset;
+    ble_hs_cfg.sync_cb = onSync;
 
     //ble_hs_cfg.store_read_cb = _store_read;
     //ble_hs_cfg.store_write_cb = _store_write;
@@ -1223,11 +1313,8 @@ void taskBleFunc(void* pvParameter) {
     // See: components/bt//host/nimble/nimble/nimble/host/store/config/src/ble_store_config.c
     ble_store_config_init();
 
-
-
-
     // Run forever
-    nimble_port_freertos_init(_runTask);
+    nimble_port_freertos_init(runTask);
 
     // Unblock the bootstrap task
     *ready = 1;
@@ -1237,6 +1324,8 @@ void taskBleFunc(void* pvParameter) {
     while (1) {
 
         size_t length = 0;
+
+        uint16_t handle = conn.content;
 
         if (!conn.clearToSend) {
             // Wait for a notification from the notification callback
@@ -1251,21 +1340,24 @@ void taskBleFunc(void* pvParameter) {
         } else if (sendMessageChunk(buffer, &length)) {
             // Pending outgoing message; it has been copied to buffer
             // and length updated
+
+        } else if (sendLog(buffer, &length)) {
+            // Pending log; it has been copied to buffer and length updated
+            handle = conn.logger;
         }
 
         if (length) {
             //printf("[ble] indicate: length=%d header=%02x%02x\n", length,
             //  buffer[0], (length > 1) ? buffer[1]: 0);
 
-            if ((conn.state & STATE_CONNECTED) == 0) {
+            if ((conn.state & ConnStateConnected) == 0) {
                 printf("[ble] indicate: not connected\n");
                 continue;
             }
 
             struct os_mbuf *om = ble_hs_mbuf_from_flat(buffer, length);
             conn.clearToSend = false;
-            int rc = ble_gatts_indicate_custom(conn.conn_handle,
-              conn.content, om);
+            int rc = ble_gatts_indicate_custom(conn.conn_handle, handle, om);
             if (rc) {
                 printf("[ble] indicate fail: handle=%d rc=%d\n", conn.content, rc);
                 conn.clearToSend = true;
