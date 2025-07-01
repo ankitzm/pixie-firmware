@@ -3,7 +3,8 @@
 #include "firefly-scene.h"
 
 #include "panel.h"
-#include "./panel-attest.h"
+//#include "./panel-attest.h"
+#include "./panel-connect.h"
 #include "./panel-gifs.h"
 #include "./panel-menu.h"
 #include "./panel-space.h"
@@ -21,20 +22,24 @@ typedef struct MenuState {
 static void keyChanged(EventPayload event, void *_app) {
     MenuState *app = _app;
 
+
     switch(event.props.keys.down) {
-        case KeyOk:
+        case KeyOk: {
+            uint32_t result = 0;
             switch(app->cursor) {
                 case 0:
-                    pushPanelAttest(NULL);
+                    result = pushPanelConnect(NULL);
                     break;
                 case 1:
-                    pushPanelGifs(NULL);
+                    result = pushPanelGifs(NULL);
                     break;
                 case 2:
-                    pushPanelSpace(NULL);
+                    result = pushPanelSpace(NULL);
                     break;
             }
+            printf("RESULT-men: %ld\n", result);
             return;
+        }
         case KeyNorth:
             if (app->cursor == 0) { return; }
             app->cursor--;
@@ -46,6 +51,7 @@ static void keyChanged(EventPayload event, void *_app) {
         default:
             return;
     }
+
 
     ffx_sceneNode_stopAnimations(app->nodeCursor, FfxSceneActionStopCurrent);
     ffx_sceneNode_animatePosition(app->nodeCursor,
@@ -64,7 +70,7 @@ static int _init(FfxScene scene, FfxNode node, void *_app, void *arg) {
 
     FfxNode text;
 
-    text = ffx_scene_createLabel(scene, FfxFontLarge, "Device");
+    text = ffx_scene_createLabel(scene, FfxFontLarge, "Wallet");
     ffx_sceneGroup_appendChild(node, text);
     ffx_sceneNode_setPosition(text, (FfxPoint){ .x = 70, .y = 63 });
 
@@ -89,6 +95,6 @@ static int _init(FfxScene scene, FfxNode node, void *_app, void *arg) {
     return 0;
 }
 
-void pushPanelMenu(void *arg) {
-    panel_push(_init, sizeof(MenuState), PanelStyleCoverUp, arg);
+uint32_t pushPanelMenu(void *arg) {
+    return panel_push(_init, sizeof(MenuState), PanelStyleCoverUp, arg);
 }

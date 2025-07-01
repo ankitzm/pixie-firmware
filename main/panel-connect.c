@@ -6,83 +6,180 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+#include "firefly-address.h"
 #include "firefly-cbor.h"
-#include "firefly-crypto.h"
+#include "firefly-ecc.h"
 #include "firefly-hash.h"
 #include "firefly-tx.h"
 
 #include "panel.h"
+#include "panel-connect.h"
+#include "panel-tx.h"
+
+#include "device-info.h"
 #include "utils.h"
 
-#include "panel-connect.h"
+
+#define ACCOUNT_INDEX        (0)
+
 
 typedef struct State {
     FfxScene scene;
     FfxNode panel;
 
-    uint32_t ticks;
+    FfxNode screenConnect;
+    FfxNode screenDisconnect;
+
+    uint32_t messageId;
 } State;
 
-static void onMessage(EventPayload event, void* arg) {
-    // getBytes(id("test-foobar-running-moose-34"))
-    uint8_t privateKey[] = {
-        15, 254, 74, 18, 107, 9, 94, 32, 109, 87, 148, 60, 35, 251, 109, 95,
-        51, 98, 149, 196, 4, 13, 42, 18, 147, 178, 165, 40, 128, 78, 67, 99
-    };
 
-    uint32_t messageId = event.props.message.id;
-    const char* method = event.props.message.method;
+static void replyAccounts(uint32_t messageId) {
 
-    FfxCborCursor params;
-    ffx_cbor_clone(&params, &event.props.message.params);
+    uint32_t t0 = ticks();
 
-    printf("GOT MESSAGE: id=%ld, method=%s", messageId, method);
-    ffx_cbor_dump(&params);
+    FfxEcPrivkey privkey;
+    assert(device_testPrivateKey(&privkey, ACCOUNT_INDEX));
 
-    if (!panel_acceptMessage(messageId, NULL)) {
-        printf("EEK!");
-        return;
-    }
+    FfxEcPubkey pubkey;
+    ffx_ec_computePubkey(&pubkey, &privkey);
 
-    uint8_t digest[FFX_KECCAK256_DIGEST_LENGTH] = { 0 };
-    {
-        size_t rlpLength = 256;
-        uint8_t *rlp = malloc(rlpLength);
-        memset(rlp, 0, rlpLength);
+    memset(privkey.data, 0, sizeof(privkey.data));
 
-        FfxTxStatus txStatus = ffx_tx_serializeUnsigned(&params, rlp,
-          &rlpLength);
-        printf("tx: status=%d length=%d\n", txStatus, rlpLength);
+    FfxAddress address = ffx_eth_getAddress(&pubkey);
 
-        printf("RLP: 0x");
-        for (int i = 0; i < rlpLength; i++) {
-            printf("%02x", rlp[i]);
-        }
-        printf("\n");
+    printf("getAccounts: dt=%ld\n", ticks() - t0);
 
-        ffx_hash_keccak256(digest, rlp, rlpLength);
-        free(rlp);
-    }
+    uint8_t replyBuffer[128] = { 0 };
+    FfxCborBuilder reply = ffx_cbor_build(replyBuffer, sizeof(replyBuffer));
 
-    uint8_t sig[FFX_SECP256K1_SIGNATURE_LENGTH] = { 0 };
-    int32_t status = ffx_pk_signSecp256k1(privateKey, digest, sig);
+    ffx_cbor_appendArray(&reply, 1);
+    ffx_cbor_appendData(&reply, address.data, sizeof(address.data));
+
+    panel_sendReply(messageId, &reply);
+}
+
+static void replySignTransaction(uint32_t messageId, FfxDataResult tx) {
+    printf("Sending: @TODO %ld\n", messageId);
+    ffx_tx_dump(tx);
+
+    // Compute the transaction hash to sign
+    FfxEcDigest digest;
+    //uint8_t digest[FFX_KECCAK256_DIGEST_LENGTH] = { 0 };
+    ffx_hash_keccak256(digest.data, tx.bytes, tx.length);
+
+    // Get the private key
+    FfxEcPrivkey privkey;
+    assert(device_testPrivateKey(&privkey, ACCOUNT_INDEX));
+
+    // Sign the transaction
+    FfxEcSignature sig;
+    int32_t status = ffx_ec_signDigest(&sig, &privkey, &digest);
     printf("sig: status=%ld\n", status);
 
-    uint8_t *_reply = malloc(256);
-    FfxCborBuilder reply;
-    ffx_cbor_build(&reply, _reply, 256);
+    memset(privkey.data, 0, sizeof(privkey.data));
+
+    uint8_t replyBuffer[128];
+    FfxCborBuilder reply = ffx_cbor_build(replyBuffer, sizeof(replyBuffer));
 
     ffx_cbor_appendMap(&reply, 3);
     ffx_cbor_appendString(&reply, "r");
-    ffx_cbor_appendData(&reply, &sig[0], 32);
+    ffx_cbor_appendData(&reply, &sig.data[0], 32);
     ffx_cbor_appendString(&reply, "s");
-    ffx_cbor_appendData(&reply, &sig[32], 32);
+    ffx_cbor_appendData(&reply, &sig.data[32], 32);
     ffx_cbor_appendString(&reply, "v");
-    ffx_cbor_appendNumber(&reply, sig[64]);
+    ffx_cbor_appendNumber(&reply, sig.data[64]);
 
-    //panel_sendErrorReply(4242, "This is an error message...");
     panel_sendReply(messageId, &reply);
-    free(_reply);
+}
+
+static void showDisconnect(State *state, bool animated) {
+    ffx_sceneNode_setHidden(state->screenConnect, true);
+    ffx_sceneNode_setHidden(state->screenDisconnect, false);
+}
+
+static void showConnect(State *state, bool animated) {
+    ffx_sceneNode_setHidden(state->screenConnect, false);
+    ffx_sceneNode_setHidden(state->screenDisconnect, true);
+}
+
+
+static void onRadio(EventPayload event, void* arg) {
+    State *state = arg;
+    printf("RADIO: %d\n", event.props.radio.state);
+    if (event.props.radio.state == EventRadioStateConnect) {
+        showConnect(state, true);
+    } else if (event.props.radio.state == EventRadioStateDisconnect) {
+        showDisconnect(state, true);
+    }
+}
+
+static void onKeyUp(EventPayload event, void *_app) {
+    //State *app = _app;
+    panel_disconnect();
+    panel_pop(0);
+}
+
+static void onMessage(EventPayload event, void* arg) {
+/*
+    uint8_t _privateKey[32] = { 0 };
+    uint8_t* privateKey = device_testPrivateKey(_privateKey, ACCOUNT_INDEX);
+    assert(privateKey != NULL);
+*/
+
+    uint32_t messageId = event.props.message.id;
+    const char* method = event.props.message.method;
+    FfxCborCursor params = event.props.message.params;
+    printf("GOT MESSAGE: id=%ld, method=%s cbor=", messageId, method);
+    ffx_cbor_dump(params);
+
+    if (!panel_acceptMessage(messageId, NULL)) {
+        printf("EEK!\n");
+        return;
+    }
+
+    if (strcmp(method, "ffx_accounts") == 0) {
+        replyAccounts(messageId);
+
+    } else if (strcmp(method, "ffx_signTransaction") == 0) {
+        size_t txBufferSize = 16 * 1024;
+        uint8_t *txBuffer = malloc(txBufferSize);
+        assert(txBuffer);
+
+        FfxDataResult tx = ffx_tx_serializeUnsigned(params, txBuffer, txBufferSize);
+        printf("panel-connect: ");
+        ffx_tx_dump(tx);;
+
+        uint32_t result = pushPanelTx(&tx, PanelTxViewSummary);
+        printf("GOT: %ld\n", result);
+
+        if (result == PANEL_TX_APPROVE) {
+            replySignTransaction(messageId, tx);
+        } else if (result == PANEL_TX_REJECT) {
+            panel_sendErrorReply(messageId, 1000, "user rejected request");
+        } else {
+             panel_sendErrorReply(messageId, 42, "internal error");
+        }
+
+        free(txBuffer);
+
+    } else {
+        panel_sendErrorReply(messageId, 1, "Unsupported operation");
+    }
+}
+
+static FfxNode addText(FfxNode node, const char* text, int y, FfxFont font) {
+    FfxScene scene = ffx_sceneNode_getScene(node);
+
+    FfxNode label = ffx_scene_createLabel(scene, font, text);
+    ffx_sceneGroup_appendChild(node, label);
+
+    ffx_sceneNode_setPosition(label, ffx_point(120, y));
+
+    ffx_sceneLabel_setAlign(label, FfxTextAlignMiddle | FfxTextAlignCenter);
+    ffx_sceneLabel_setOutlineColor(label, COLOR_BLACK);
+
+    return label;
 }
 
 static int _init(FfxScene scene, FfxNode panel, void* _state, void* arg) {
@@ -90,20 +187,35 @@ static int _init(FfxScene scene, FfxNode panel, void* _state, void* arg) {
     state->scene = scene;
     state->panel = panel;
 
-    FfxNode *label = ffx_scene_createLabel(scene, FfxFontMediumBold,
-      "Listening...");
-    ffx_sceneLabel_setAlign(label,
-      FfxTextAlignMiddleBaseline | FfxTextAlignCenter);
-    ffx_sceneLabel_setOutlineColor(label, COLOR_BLACK);
-    ffx_sceneNode_setPosition(label, ffx_point(120, 120));
-    ffx_sceneGroup_appendChild(panel, label);
+    FfxNode screenDisconnect = ffx_scene_createGroup(scene);
+    state->screenDisconnect = screenDisconnect;
+    ffx_sceneGroup_appendChild(panel, screenDisconnect);
 
+    FfxNode screenConnect = ffx_scene_createGroup(scene);
+    state->screenConnect = screenConnect;
+    ffx_sceneGroup_appendChild(panel, screenConnect);
+
+    addText(screenDisconnect, "Listening...", 40, FfxFontLargeBold);
+    addText(screenDisconnect, "Connect at:", 130, FfxFontLarge);
+    addText(screenDisconnect, "firefly.box/demo", 160, FfxFontMedium);
+
+    addText(screenConnect, "Connected!", 40, FfxFontLargeBold);
+    addText(screenConnect, "Ready! Waiting", 130, FfxFontLarge);
+    addText(screenConnect, "for requests...", 160, FfxFontLarge);
 
     panel_onEvent(EventNameMessage, onMessage, state);
+    panel_onEvent(EventNameRadioState, onRadio, state);
+    panel_onEvent(EventNameKeysUp | KeyCancel, onKeyUp, state);
+
+    if (panel_isRadioConnected()) {
+        showConnect(state, false);
+    } else {
+        showDisconnect(state, false);
+    }
 
     return 0;
 }
 
-void pushPanelConnect(void* arg) {
-    panel_push(_init, sizeof(State), PanelStyleSlideLeft, arg);
+uint32_t pushPanelConnect() {
+    return panel_push(_init, sizeof(State), PanelStyleSlideLeft, NULL);
 }

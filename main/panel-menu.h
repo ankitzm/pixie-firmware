@@ -6,7 +6,7 @@ extern "C" {
 #endif /* __cplusplus */
 
 
-void pushPanelMenu(void *arg);
+uint32_t pushPanelMenu(void *arg);
 
 
 #ifdef __cplusplus

@@ -12,6 +12,8 @@ idf_component_register(
     "panel-menu.c"
     "panel-null.c"
     "panel-space.c"
+    "panel-test.c"
+    "panel-tx.c"
     "pixels.c"
     "task-ble.c"
     "task-io.c"
