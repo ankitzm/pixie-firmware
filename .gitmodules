@@ -6,6 +6,10 @@
 [submodule "components/firefly-scene"]
 	path = components/firefly-scene
 	url = git@github.com:firefly/component-scene.git
+
 [submodule "components/firefly-ethers"]
 	path = components/firefly-ethers
-	url = git@github.com:firefly/component-ethers.git
+	url = git@github.com:ethers-io/ethers.c.git
+[submodule "components/firefly-hollows"]
+	path = components/firefly-hollows
+	url = git@github.com:firefly/component-hollows.git
