@@ -7,6 +7,7 @@ idf_component_register(
     "panel-attest.c"
     "panel-connect.c"
     "panel-gifs.c"
+    "panel-info.c"
     "panel-keyboard.c"
     "panel-game.c"
     "panel-menu.c"

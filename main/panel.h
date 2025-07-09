@@ -28,9 +28,11 @@ typedef enum PanelStyle {
 ///////////////////////////////
 // Panel Managment API
 
-typedef int (*PanelInit)(FfxScene scene, FfxNode node, void* state, void* arg);
+typedef int (*PanelInitFunc)(FfxScene scene, FfxNode node, void* state,
+  void* arg);
 
-uint32_t panel_push(PanelInit init, size_t stateSize, PanelStyle style, void* arg);
+uint32_t panel_push(PanelInitFunc initFunc, size_t stateSize,
+  PanelStyle style, void* arg);
 
 // Deletes the current panel task, returning control to previous panel in stack
 void panel_pop(uint32_t status);

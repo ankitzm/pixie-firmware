@@ -16,7 +16,7 @@ extern FfxScene scene;
 #define MAX_EVENT_BACKLOG  (8)
 
 typedef struct _PanelInit {
-    PanelInit init;
+    PanelInitFunc init;
     int id;
     size_t stateSize;
     void *arg;
@@ -153,7 +153,7 @@ static void _panelInit(void *_arg) {
 ///////////////////////////////
 // API
 
-uint32_t panel_push(PanelInit init, size_t stateSize, PanelStyle style,
+uint32_t panel_push(PanelInitFunc init, size_t stateSize, PanelStyle style,
   void *arg) {
 
     /*
@@ -181,8 +181,10 @@ uint32_t panel_push(PanelInit init, size_t stateSize, PanelStyle style,
     panelInit.arg = arg;
     panelInit.done = xSemaphoreCreateBinaryStatic(&doneBuffer);
 
+    printf("DEBUG: freeHeap=%ld request=%d\n", esp_get_free_heap_size(), stateSize);
+
     BaseType_t status = xTaskCreatePinnedToCore(&_panelInit, name,
-      (4 * 4096) + stateSize, &panelInit, PRIORITY_APP, &handle, 0);
+      ((4 * 4096) + stateSize + 3) / 4, &panelInit, PRIORITY_APP, &handle, 0);
     printf("[main] init panel task: status=%d\n", status);
     assert(handle != NULL);
 

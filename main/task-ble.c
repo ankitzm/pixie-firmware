@@ -389,10 +389,11 @@ static void sendMessage(FfxCborBuilder *builder) {
     msg.state = MessageStateSending;
     msg.id = 0;
 
-    FfxSha256Context ctx;
-    ffx_hash_initSha256(&ctx);
-    ffx_hash_updateSha256(&ctx, &msg.data[32], cborLength);
-    ffx_hash_finalSha256(&ctx, msg.data);
+    //FfxSha256Context ctx;
+    //ffx_hash_initSha256(&ctx);
+    //ffx_hash_updateSha256(&ctx, &msg.data[32], cborLength);
+    //ffx_hash_finalSha256(&ctx, msg.data);
+    ffx_hash_sha256(msg.data, &msg.data[32], cborLength);
 
     queueCommandRequest(CMD_RESET);
 
@@ -416,10 +417,11 @@ static void processMessage() {
     //dumpBuffer("Process Message", msg.data, msg.length);
 
     uint8_t checksum[32];
-    FfxSha256Context ctx;
-    ffx_hash_initSha256(&ctx);
-    ffx_hash_updateSha256(&ctx, &msg.data[32], msg.length - 32);
-    ffx_hash_finalSha256(&ctx, checksum);
+    //FfxSha256Context ctx;
+    //ffx_hash_initSha256(&ctx);
+    //ffx_hash_updateSha256(&ctx, &msg.data[32], msg.length - 32);
+    //ffx_hash_finalSha256(&ctx, checksum);
+    ffx_hash_sha256(checksum, &msg.data[32], msg.length - 32);
 
     if (!compareBuffer(checksum, msg.data, sizeof(checksum))) {
         resetMessage();
@@ -1049,6 +1051,8 @@ bool panel_sendReply(uint32_t id, FfxCborBuilder *result) {
 }
 
 void panel_disconnect() {
+    if (!(conn.state & ConnStateConnected)) { return; }
+
     int rc = ble_gap_terminate(conn.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
     if (rc != 0) {
         printf("Failed to disconnect; rc = %d\n", rc);
