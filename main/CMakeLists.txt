@@ -1,23 +1,12 @@
 idf_component_register(
   SRCS
     "main.c"
-    "device-info.c"
-    "events.c"
-    "panel.c"
-    "panel-attest.c"
     "panel-connect.c"
     "panel-gifs.c"
     "panel-info.c"
-    "panel-keyboard.c"
-    "panel-game.c"
     "panel-menu.c"
-    "panel-null.c"
     "panel-space.c"
-    "panel-test.c"
     "panel-tx.c"
-    "pixels.c"
-    "task-ble.c"
-    "task-io.c"
     "utils.c"
 
   INCLUDE_DIRS

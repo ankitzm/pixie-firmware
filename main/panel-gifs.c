@@ -1,10 +1,10 @@
 #include <stdio.h>
 
+#include "firefly-hollows.h"
 #include "firefly-scene.h"
 
 #include "utils.h"
 
-#include "panel.h"
 #include "panel-gifs.h"
 
 #include "images/video-fox.h"
@@ -28,11 +28,11 @@ static void animateMenu(FfxNode menu, FfxNodeAnimation *animation, void *arg) {
     ffx_sceneNode_setPosition(menu, ffx_point(x, 0));
 }
 
-static void keyChanged(EventPayload event, void *_state) {
+static void onKeys(FfxEvent event, FfxEventProps props, void *_state) {
     State *state = _state;
 
-    switch(event.props.keys.down) {
-        case KeyCancel:
+    switch(props.keys.down) {
+        case FfxKeyCancel:
             state->video = 0;
             if (state->menuHidden) {
                 ffx_sceneNode_stopAnimations(state->menu,
@@ -41,10 +41,10 @@ static void keyChanged(EventPayload event, void *_state) {
                 ffx_sceneNode_animate(state->menu, animateMenu, &x);
                 state->menuHidden = false;
             } else {
-                panel_pop(42);
+                ffx_popPanel(42);
             }
             break;
-        case KeyOk:
+        case FfxKeyOk:
             state->video = 1;
             if (!state->menuHidden) {
                 ffx_sceneNode_stopAnimations(state->menu,
@@ -54,7 +54,7 @@ static void keyChanged(EventPayload event, void *_state) {
                 state->menuHidden = true;
             }
             break;
-        case KeyNorth:
+        case FfxKeyNorth:
             state->video = 2;
             if (!state->menuHidden) {
                 ffx_sceneNode_stopAnimations(state->menu,
@@ -64,7 +64,7 @@ static void keyChanged(EventPayload event, void *_state) {
                 state->menuHidden = true;
             }
             break;
-        case KeySouth:
+        case FfxKeySouth:
             state->video = 3;
             if (!state->menuHidden) {
                 ffx_sceneNode_stopAnimations(state->menu,
@@ -156,7 +156,7 @@ static void setRrollFrame(FfxNode node) {
 }
 
 
-static void render(EventPayload event, void *_state) {
+static void onRender(FfxEvent event, FfxEventProps props, void *_state) {
     State *state = _state;
 
     switch (state->video) {
@@ -175,7 +175,7 @@ static void render(EventPayload event, void *_state) {
     }
 }
 
-static int _init(FfxScene scene, FfxNode node, void *_state, void *arg) {
+static int initFunc(FfxScene scene, FfxNode node, void *_state, void *arg) {
     State *state = _state;
     state->scene = scene;
 
@@ -216,14 +216,13 @@ static int _init(FfxScene scene, FfxNode node, void *_state, void *arg) {
     ffx_sceneLabel_setAlign(text, FfxTextAlignRight | FfxTextAlignMiddle);
     ffx_sceneLabel_setOutlineColor(text, ffx_color_rgb(0, 0, 0));
 
-    panel_onEvent(EventNameKeysChanged | KeyNorth | KeySouth | KeyOk | KeyCancel,
-      keyChanged, state);
+    ffx_onEvent(FfxEventKeys, onKeys, state);
 
-    panel_onEvent(EventNameRenderScene, render, state);
+    ffx_onEvent(FfxEventRenderScene, onRender, state);
 
     return 0;
 }
 
-uint32_t pushPanelGifs(void *arg) {
-    return panel_push(_init, sizeof(State), PanelStyleSlideLeft, arg);
+int pushPanelGifs() {
+    return ffx_pushPanel(initFunc, sizeof(State), FfxPanelStyleSlideLeft, NULL);
 }

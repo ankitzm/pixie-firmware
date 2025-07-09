@@ -59,7 +59,7 @@ void appendPadding(void *infoState, size_t size);
 typedef int (*InfoInitFunc)(void *infoState, void *state, void *arg);
 typedef void (*InfoSelectFunc)(void *state, uint16_t userData);
 
-uint32_t pushPanelInfo(InfoInitFunc initFunc, size_t stateSize,
+int pushPanelInfo(InfoInitFunc initFunc, size_t stateSize,
   InfoSelectFunc selectFunc, void *arg);
 
 

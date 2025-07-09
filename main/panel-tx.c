@@ -4,10 +4,10 @@
 #include "firefly-address.h"
 #include "firefly-db.h"
 #include "firefly-decimal.h"
+#include "firefly-hollows.h"
 #include "firefly-scene.h"
 #include "firefly-tx.h"
 
-#include "panel.h"
 #include "panel-tx.h"
 
 #include "utils.h"
@@ -247,7 +247,7 @@ typedef struct InitArg {
     PanelTxView view;
 } InitArg;
 
-static int _initFunc(void *infoState, void *_state, void *_arg) {
+static int initFunc(void *infoState, void *_state, void *_arg) {
     State *state = _state;
 
     InitArg *init = _arg;
@@ -269,12 +269,12 @@ static int _initFunc(void *infoState, void *_state, void *_arg) {
     return 0;
 }
 
-void _selectFunc(void *_state, uint16_t userData) {
+void selectFunc(void *_state, uint16_t userData) {
 
     if (userData == PanelTxActionReject) {
-        panel_pop(PANEL_TX_REJECT);
+        ffx_popPanel(PANEL_TX_REJECT);
     } else if (userData == PanelTxActionApprove) {
-        panel_pop(PANEL_TX_APPROVE);
+        ffx_popPanel(PANEL_TX_APPROVE);
     } else if (userData == PanelTxViewNoDrill) {
         // Do nothing; cannot drill down
     } else if (userData) {
@@ -287,8 +287,8 @@ void _selectFunc(void *_state, uint16_t userData) {
     }
 }
 
-uint32_t pushPanelTx(FfxDataResult *tx, PanelTxView view) {
+int pushPanelTx(FfxDataResult *tx, PanelTxView view) {
     InitArg init = { .tx = tx, .view = view };
-    return pushPanelInfo(_initFunc, sizeof(State), _selectFunc, &init);
+    return pushPanelInfo(initFunc, sizeof(State), selectFunc, &init);
 }
 

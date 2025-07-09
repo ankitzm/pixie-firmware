@@ -1,9 +1,8 @@
 #include <stdio.h>
 
+#include "firefly-hollows.h"
 #include "firefly-scene.h"
 
-#include "panel.h"
-//#include "./panel-attest.h"
 #include "./panel-connect.h"
 #include "./panel-gifs.h"
 #include "./panel-menu.h"
@@ -12,26 +11,26 @@
 #include "images/image-arrow.h"
 
 
-typedef struct MenuState {
+typedef struct State {
     size_t cursor;
     FfxScene scene;
     FfxNode nodeCursor;
-} MenuState;
+} State;
 
 
-static void keyChanged(EventPayload event, void *_app) {
-    MenuState *app = _app;
+static void onKeys(FfxEvent event, FfxEventProps props, void *_app) {
+    State *app = _app;
 
 
-    switch(event.props.keys.down) {
-        case KeyOk: {
+    switch(props.keys.down) {
+        case FfxKeyOk: {
             uint32_t result = 0;
             switch(app->cursor) {
                 case 0:
-                    result = pushPanelConnect(NULL);
+                    result = pushPanelConnect();
                     break;
                 case 1:
-                    result = pushPanelGifs(NULL);
+//                    result = pushPanelGifs(NULL);
                     break;
                 case 2:
                     result = pushPanelSpace(NULL);
@@ -40,11 +39,11 @@ static void keyChanged(EventPayload event, void *_app) {
             printf("RESULT-men: %ld\n", result);
             return;
         }
-        case KeyNorth:
+        case FfxKeyNorth:
             if (app->cursor == 0) { return; }
             app->cursor--;
             break;
-        case KeySouth:
+        case FfxKeySouth:
             if (app->cursor == 2) { return; }
             app->cursor++;
             break;
@@ -59,8 +58,8 @@ static void keyChanged(EventPayload event, void *_app) {
       FfxCurveEaseOutQuad, NULL, NULL);
 }
 
-static int _init(FfxScene scene, FfxNode node, void *_app, void *arg) {
-    MenuState *app = _app;
+static int initFunc(FfxScene scene, FfxNode node, void *_app, void *arg) {
+    State *app = _app;
     app->scene = scene;
 
     FfxNode box = ffx_scene_createBox(scene, ffx_size(200, 180));
@@ -89,12 +88,11 @@ static int _init(FfxScene scene, FfxNode node, void *_app, void *arg) {
 
     app->nodeCursor = cursor;
 
-    panel_onEvent(EventNameKeysChanged | KeyNorth | KeySouth | KeyOk,
-      keyChanged, app);
+    ffx_onEvent(FfxEventKeys, onKeys, app);
 
     return 0;
 }
 
-uint32_t pushPanelMenu(void *arg) {
-    return panel_push(_init, sizeof(MenuState), PanelStyleCoverUp, arg);
+int pushPanelMenu() {
+    return ffx_pushPanel(initFunc, sizeof(State), FfxPanelStyleCoverUp, NULL);
 }

@@ -9,7 +9,7 @@ extern "C" {
 #define RESULT_LOSE       (0)
 #define RESULT_QUIT       (0xff)
 
-uint32_t pushPanelSpace();
+int pushPanelSpace();
 
 
 #ifdef __cplusplus

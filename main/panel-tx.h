@@ -12,7 +12,7 @@ extern "C" {
 #include "panel-info.h"
 
 
-uint32_t pushPanelTx(FfxDataResult *tx, PanelTxView view);
+int pushPanelTx(FfxDataResult *tx, PanelTxView view);
 
 
 #ifdef __cplusplus

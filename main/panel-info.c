@@ -1,9 +1,9 @@
 #include <stdio.h>
 
 #include "firefly-color.h"
+#include "firefly-hollows.h"
 #include "firefly-scene.h"
 
-#include "panel.h"
 #include "panel-info.h"
 
 
@@ -264,28 +264,28 @@ void appendButton(void *_state, const char* label, color_ffxt color,
     state->offset += 3;
 }
 
-static void keyUp(EventPayload event, void *_state) {
+static void onKeys(FfxEvent event, FfxEventProps props, void *_state) {
     State *state = _state;
 
-    switch ((~event.props.keys.down) & event.props.keys.changed) {
-        case KeySouth:
+    switch ((~props.keys.down) & props.keys.changed) {
+        case FfxKeySouth:
             if (state->index + 1 < state->nextIndex) {
                 highlight(state, state->index + 1);
             }
             break;
 
-        case KeyNorth:
+        case FfxKeyNorth:
             if (state->index > 0) {
                 highlight(state, state->index - 1);
             }
             break;
 
-        case KeyOk:
+        case FfxKeyOk:
             selectHighlight(state);
             break;
 
-        case KeyCancel:
-            panel_pop(PANEL_TX_REJECT);
+        case FfxKeyCancel:
+            ffx_popPanel(PANEL_TX_REJECT);
             break;
     }
 }
@@ -296,7 +296,7 @@ typedef struct InitArg {
     void *arg;
 } InitArg;
 
-static int _init(FfxScene scene, FfxNode panel, void* _state, void* _arg) {
+static int initFunc(FfxScene scene, FfxNode panel, void* _state, void* _arg) {
     State *state = _state;
     state->scene = scene;
     state->panel = panel;
@@ -323,20 +323,20 @@ static int _init(FfxScene scene, FfxNode panel, void* _state, void* _arg) {
 
     adjust(state);
 
-    panel_onEvent(EventNameKeysUp | KeyAll, keyUp, state);
+    ffx_onEvent(FfxEventKeys, onKeys, state);
 
     return 0;
 }
 
-uint32_t pushPanelInfo(InfoInitFunc initFunc, size_t stateSize,
+int pushPanelInfo(InfoInitFunc _initFunc, size_t stateSize,
   InfoSelectFunc selectFunc, void *arg) {
 
     InitArg init = {
-        .initFunc = initFunc,
+        .initFunc = _initFunc,
         .selectFunc = selectFunc,
         .arg = arg
     };
 
-    return panel_push(_init, sizeof(State) + stateSize, PanelStyleSlideLeft,
-      &init);
+    return ffx_pushPanel(initFunc, sizeof(State) + stateSize,
+      FfxPanelStyleSlideLeft, &init);
 }

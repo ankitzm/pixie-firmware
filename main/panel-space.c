@@ -5,6 +5,7 @@
 #include <stdio.h>
 
 #include "firefly-scene.h"
+#include "firefly-hollows.h"
 
 #include "utils.h"
 
@@ -15,9 +16,8 @@
 #include "images/image-ship.h"
 #include "images/image-space.h"
 
-#include "panel.h"
-
 #include "panel-space.h"
+
 
 #define ROWS        (4)
 #define COLS        (4)
@@ -40,7 +40,7 @@ typedef struct SpaceState {
     uint8_t boomLife[BULLETS];
     uint8_t dead[ROWS * COLS];
     uint32_t tick;
-    Keys keys;
+    FfxKeys keys;
 } SpaceState;
 
 static void explodeShip(SpaceState *space) {
@@ -77,35 +77,35 @@ static void explode(SpaceState *space, int index) {
     ffx_sceneNode_setPosition(space->alien[index], alien);
 }
 
-static void focus(EventPayload event, void *_app) {
+static void onFocus(FfxEvent event, FfxEventProps props, void *_app) {
     SpaceState *space = _app;
     space->running = true;
 }
 
-static void render(EventPayload event, void *_app) {
+static void onRender(FfxEvent event, FfxEventProps props, void *_app) {
     SpaceState *space = _app;
 
     FfxPoint ship = ffx_sceneNode_getPosition(space->ship);
     FfxPoint aliens = ffx_sceneNode_getPosition(space->aliens);
 
     // Finished animating the win
-    if (ship.x < -50) { panel_pop(RESULT_WIN); }
+    if (ship.x < -50) { ffx_popPanel(RESULT_WIN); }
 
     // Finished animating the loss
-    if (aliens.x > 400) { panel_pop(RESULT_LOSE); }
+    if (aliens.x > 400) { ffx_popPanel(RESULT_LOSE); }
 
     // Either hasn't started yet or game over
     if (!space->running) { return; }
 
     // Reset button heald down for more than 3s
-    if (space->keys == KeyOk && ticks() - space->resetTimer > 3000) {
-        panel_pop(RESULT_QUIT);
+    if (space->keys == FfxKeyOk && ticks() - space->resetTimer > 3000) {
+        ffx_popPanel(RESULT_QUIT);
     }
 
     // Mode left/right if keys are being held down
-    if (space->keys & KeyNorth) {
+    if (space->keys & FfxKeyNorth) {
         if (ship.y > 0) { ship.y -= 2; }
-    } else if (space->keys & KeySouth) {
+    } else if (space->keys & FfxKeySouth) {
         if (ship.y < 240 - 38) { ship.y += 2; }
     }
     ffx_sceneNode_setPosition(space->ship, ship);
@@ -223,25 +223,25 @@ static void render(EventPayload event, void *_app) {
     ffx_sceneNode_setPosition(space->aliens, aliens);
 }
 
-static void keyChanged(EventPayload event, void *_app) {
+static void onKeys(FfxEvent event, FfxEventProps props, void *_app) {
     SpaceState *space = _app;
 
     if (!space->running) { return; }
 
-    uint32_t keys = event.props.keys.down;
+    uint32_t keys = props.keys.down;
     space->keys = keys;
 
     FfxPoint ship = ffx_sceneNode_getPosition(space->ship);
 
     //printf("[space] high-water: %d\n", uxTaskGetStackHighWaterMark(NULL));
 
-    if (keys == KeyOk) {
+    if (keys == FfxKeyOk) {
         space->resetTimer = ticks();
     } else {
         space->resetTimer = 0;
     }
 
-    if (keys & KeyCancel) {
+    if (keys & FfxKeyCancel) {
         for (int i = 0; i < BULLETS; i++) {
             FfxPoint b = ffx_sceneNode_getPosition(space->bullet[i]);
 
@@ -256,7 +256,7 @@ static void keyChanged(EventPayload event, void *_app) {
     }
 }
 
-static int _init(FfxScene scene, FfxNode panel, void* panelState, void* arg) {
+static int initFunc(FfxScene scene, FfxNode panel, void* panelState, void* arg) {
     SpaceState *space = panelState;
     space->scene = scene;
     space->panel = panel;
@@ -302,16 +302,16 @@ static int _init(FfxScene scene, FfxNode panel, void* panelState, void* arg) {
         }
     }
 
-    panel_onEvent(EventNameKeysChanged | KeyNorth | KeySouth | KeyOk | KeyCancel,
-      keyChanged, space);
+    ffx_onEvent(FfxEventKeys, onKeys, space);
 
-    panel_onEvent(EventNameRenderScene, render, space);
+    ffx_onEvent(FfxEventRenderScene, onRender, space);
 
-    panel_onEvent(EventNamePanelFocus, focus, space);
+    ffx_onEvent(FfxEventFocus, onFocus, space);
 
     return 0;
 }
 
-uint32_t pushPanelSpace() {
-    return panel_push(_init, sizeof(SpaceState), PanelStyleSlideLeft, NULL);
+int pushPanelSpace() {
+    return ffx_pushPanel(initFunc, sizeof(SpaceState), FfxPanelStyleSlideLeft,
+      NULL);
 }

@@ -10,13 +10,12 @@
 #include "firefly-cbor.h"
 #include "firefly-ecc.h"
 #include "firefly-hash.h"
+#include "firefly-hollows.h"
 #include "firefly-tx.h"
 
-#include "panel.h"
 #include "panel-connect.h"
 #include "panel-tx.h"
 
-#include "device-info.h"
 #include "utils.h"
 
 
@@ -39,7 +38,7 @@ static void replyAccounts(uint32_t messageId) {
     uint32_t t0 = ticks();
 
     FfxEcPrivkey privkey;
-    assert(device_testPrivateKey(&privkey, ACCOUNT_INDEX));
+    assert(ffx_deviceTestPrivkey(&privkey, ACCOUNT_INDEX));
 
     FfxEcPubkey pubkey;
     ffx_ec_computePubkey(&pubkey, &privkey);
@@ -56,7 +55,7 @@ static void replyAccounts(uint32_t messageId) {
     ffx_cbor_appendArray(&reply, 1);
     ffx_cbor_appendData(&reply, address.data, sizeof(address.data));
 
-    panel_sendReply(messageId, &reply);
+    ffx_sendReply(messageId, &reply);
 }
 
 static void replySignTransaction(uint32_t messageId, FfxDataResult tx) {
@@ -70,7 +69,7 @@ static void replySignTransaction(uint32_t messageId, FfxDataResult tx) {
 
     // Get the private key
     FfxEcPrivkey privkey;
-    assert(device_testPrivateKey(&privkey, ACCOUNT_INDEX));
+    assert(ffx_deviceTestPrivkey(&privkey, ACCOUNT_INDEX));
 
     // Sign the transaction
     FfxEcSignature sig;
@@ -90,7 +89,7 @@ static void replySignTransaction(uint32_t messageId, FfxDataResult tx) {
     ffx_cbor_appendString(&reply, "v");
     ffx_cbor_appendNumber(&reply, sig.data[64]);
 
-    panel_sendReply(messageId, &reply);
+    ffx_sendReply(messageId, &reply);
 }
 
 static void showDisconnect(State *state, bool animated) {
@@ -104,39 +103,35 @@ static void showConnect(State *state, bool animated) {
 }
 
 
-static void onRadio(EventPayload event, void* arg) {
+static void onRadio(FfxEvent event, FfxEventProps props, void* arg) {
     State *state = arg;
-    printf("RADIO: %d\n", event.props.radio.state);
-    if (event.props.radio.state == EventRadioStateConnect) {
+    if (props.radio.connected) {
         showConnect(state, true);
-    } else if (event.props.radio.state == EventRadioStateDisconnect) {
+    } else {
         showDisconnect(state, true);
     }
 }
 
-static void onKeyUp(EventPayload event, void *_app) {
+static void onKeys(FfxEvent event, FfxEventProps props, void *_app) {
     //State *app = _app;
-    panel_disconnect();
-    panel_pop(0);
+    if (props.keys.down & FfxKeyCancel) {
+        ffx_disconnect();
+        ffx_popPanel(0);
+    }
 }
 
-static void onMessage(EventPayload event, void* arg) {
+static void onMessage(FfxEvent event, FfxEventProps props, void* arg) {
 /*
     uint8_t _privateKey[32] = { 0 };
     uint8_t* privateKey = device_testPrivateKey(_privateKey, ACCOUNT_INDEX);
     assert(privateKey != NULL);
 */
 
-    uint32_t messageId = event.props.message.id;
-    const char* method = event.props.message.method;
-    FfxCborCursor params = event.props.message.params;
+    uint32_t messageId = props.message.id;
+    const char* method = props.message.method;
+    FfxCborCursor params = *props.message.params;
     printf("GOT MESSAGE: id=%ld, method=%s cbor=", messageId, method);
     ffx_cbor_dump(params);
-
-    if (!panel_acceptMessage(messageId, NULL)) {
-        printf("EEK!\n");
-        return;
-    }
 
     if (strcmp(method, "ffx_accounts") == 0) {
         replyAccounts(messageId);
@@ -156,15 +151,15 @@ static void onMessage(EventPayload event, void* arg) {
         if (result == PANEL_TX_APPROVE) {
             replySignTransaction(messageId, tx);
         } else if (result == PANEL_TX_REJECT) {
-            panel_sendErrorReply(messageId, 1000, "user rejected request");
+            ffx_sendErrorReply(messageId, 1000, "user rejected request");
         } else {
-             panel_sendErrorReply(messageId, 42, "internal error");
+            ffx_sendErrorReply(messageId, 42, "internal error");
         }
 
         free(txBuffer);
 
     } else {
-        panel_sendErrorReply(messageId, 1, "Unsupported operation");
+        ffx_sendErrorReply(messageId, 1, "Unsupported operation");
     }
 }
 
@@ -182,7 +177,7 @@ static FfxNode addText(FfxNode node, const char* text, int y, FfxFont font) {
     return label;
 }
 
-static int _init(FfxScene scene, FfxNode panel, void* _state, void* arg) {
+static int initFunc(FfxScene scene, FfxNode panel, void* _state, void* arg) {
     State *state = _state;
     state->scene = scene;
     state->panel = panel;
@@ -203,11 +198,11 @@ static int _init(FfxScene scene, FfxNode panel, void* _state, void* arg) {
     addText(screenConnect, "Ready! Waiting", 130, FfxFontLarge);
     addText(screenConnect, "for requests...", 160, FfxFontLarge);
 
-    panel_onEvent(EventNameMessage, onMessage, state);
-    panel_onEvent(EventNameRadioState, onRadio, state);
-    panel_onEvent(EventNameKeysUp | KeyCancel, onKeyUp, state);
+    ffx_onEvent(FfxEventMessage, onMessage, state);
+    ffx_onEvent(FfxEventRadioState, onRadio, state);
+    ffx_onEvent(FfxEventKeys, onKeys, state);
 
-    if (panel_isRadioConnected()) {
+    if (ffx_isConnected()) {
         showConnect(state, false);
     } else {
         showDisconnect(state, false);
@@ -216,6 +211,7 @@ static int _init(FfxScene scene, FfxNode panel, void* _state, void* arg) {
     return 0;
 }
 
-uint32_t pushPanelConnect() {
-    return panel_push(_init, sizeof(State), PanelStyleSlideLeft, NULL);
+int pushPanelConnect() {
+    return ffx_pushPanel(initFunc, sizeof(State), FfxPanelStyleSlideLeft,
+      NULL);
 }
